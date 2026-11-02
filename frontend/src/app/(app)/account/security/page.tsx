@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, ShieldAlert, ShieldCheck } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useState, type FormEvent } from 'react';
+import { ChangePasswordCard } from '@/components/change-password';
 import { useToast } from '@/components/toast';
 import { Button, ErrorNote, Field, Modal, PageHeader, Panel, StatusPill, TableSkeleton } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
@@ -25,7 +26,7 @@ export default function SecurityPage() {
   return (
     <>
       <PageHeader title="Xavfsizlik" description="Akkauntingizni himoyalash sozlamalari" />
-      <div className="max-w-2xl">
+      <div className="max-w-2xl space-y-4">
         {status.isPending ? (
           <Panel>
             <TableSkeleton rows={2} />
@@ -62,6 +63,7 @@ export default function SecurityPage() {
             </div>
           </Panel>
         )}
+        <ChangePasswordCard />
       </div>
       {dialog === 'enable' && <EnableDialog onClose={() => setDialog(null)} />}
       {dialog === 'disable' && <DisableDialog onClose={() => setDialog(null)} />}

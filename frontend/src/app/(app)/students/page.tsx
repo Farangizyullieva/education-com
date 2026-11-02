@@ -1,7 +1,7 @@
 'use client';
 
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { GraduationCap, Plus, ShieldAlert } from 'lucide-react';
+import { Download, GraduationCap, Plus, ShieldAlert } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
@@ -9,6 +9,7 @@ import { StudentForm } from '@/components/student-form';
 import { Avatar, Button, EmptyState, ErrorNote, PageHeader, Panel, SearchInput, Select, StatusPill, TableSkeleton, td, th } from '@/components/ui';
 import { api, apiPage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { downloadCsv } from '@/lib/csv';
 import { ageOf, formatMoney, formatPhone, studentNo } from '@/lib/format';
 import { useNewParam } from '@/lib/use-new-param';
 import { STATUS, type Ref, type StudentRow, type StudentStatus } from '@/lib/students';
@@ -85,12 +86,33 @@ function Students() {
     </Button>
   );
 
+  // Ekranda yuklangan (filtrlangan) qatorlarni CSV qiladi — yangi ma'lumot so'ralmaydi, ruxsat doirasi o'zgarmaydi
+  const exportButton = rows.length > 0 && (
+    <Button
+      variant="secondary"
+      onClick={() =>
+        downloadCsv(
+          `oquvchilar-${new Date().toISOString().slice(0, 10)}.csv`,
+          ['ID', 'F.I.Sh.', 'Telefon', 'Filial', 'Holat', 'Guruhlar', 'Balans', "Ro'yxatga olingan sana"],
+          rows.map((r) => [studentNo(r.number), r.full_name, r.phone ?? '', r.branch.name, t(STATUS[r.status].label), r.groups.map((g) => g.name).join(', '), r.balance, r.created_at.slice(0, 10)]),
+        )
+      }
+    >
+      <Download className="size-4" aria-hidden /> {t('CSV')}
+    </Button>
+  );
+
   return (
     <>
       <PageHeader
         title={t("O'quvchilar")}
         description={total === undefined ? ' ' : filters.status === 'archived' ? t('Arxivda: {n} ta', { n: total }) : t("Jami: {n} ta o'quvchi", { n: total })}
-        action={addButton}
+        action={
+          <>
+            {exportButton}
+            {addButton}
+          </>
+        }
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2.5">

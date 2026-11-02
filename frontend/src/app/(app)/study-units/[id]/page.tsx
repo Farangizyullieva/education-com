@@ -10,6 +10,7 @@ import { useToast } from '@/components/toast';
 import { Avatar, BackButton, Button, ConfirmDialog, EmptyState, ErrorNote, IconButton, Modal, Panel, Select, StatusPill, TableSkeleton, td, th } from '@/components/ui';
 import { todayIso, UNIT_STATUS, WEEKDAYS, type Member, type StudyUnit, type UnitStatus } from '@/lib/academic';
 import { api } from '@/lib/api';
+import { GroupLearning } from '@/components/lms-teacher';
 import { useAuth } from '@/lib/auth';
 import { formatDate, formatMoney, formatPhone, studentNo } from '@/lib/format';
 import { t } from '@/lib/i18n';
@@ -205,6 +206,7 @@ export default function StudyUnitPage() {
           onClose={() => setRemoving(null)}
         />
       )}
+      {(can('homework.manage') || can('material.manage')) && <GroupLearning unitId={g.id} />}
     </>
   );
 }

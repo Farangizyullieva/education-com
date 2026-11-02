@@ -1,7 +1,7 @@
 'use client';
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Eye, EyeOff, Pencil, Plus, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
+import { Download, Eye, EyeOff, Pencil, Plus, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState, type FormEvent } from 'react';
@@ -11,6 +11,7 @@ import {
   SearchInput, Select, StatusPill, TableSkeleton, Tag, td, th,
 } from '@/components/ui';
 import { api, ApiError, apiPage } from '@/lib/api';
+import { downloadCsv } from '@/lib/csv';
 import { useAuth } from '@/lib/auth';
 import { formatDateTime, formatPhone } from '@/lib/format';
 import { useNewParam } from '@/lib/use-new-param';
@@ -128,6 +129,20 @@ function Employees() {
         description={total === undefined ? t("Tizimga kiruvchi xodimlar va ularning rollari") : t('Jami: {n} ta xodim', { n: total })}
         action={
           <>
+            {rows.length > 0 && (
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  downloadCsv(
+                    `xodimlar-${new Date().toISOString().slice(0, 10)}.csv`,
+                    ['F.I.Sh.', 'Telefon', 'Email', 'Rollar', 'Filiallar', 'Holat', 'Oxirgi kirish'],
+                    rows.map((e) => [e.full_name, e.phone ?? '', e.email ?? '', e.roles.map((r) => r.name).join(', '), e.branches.map((b) => b.name).join(', '), e.is_active ? 'Faol' : 'Nofaol', e.last_login_at ?? '']),
+                  )
+                }
+              >
+                <Download className="size-4" aria-hidden /> {t('CSV')}
+              </Button>
+            )}
             {can('role.manage') && (
               <Link href="/settings/roles" className="inline-flex h-9.5 items-center gap-2 rounded-lg border border-line bg-surface px-3.5 text-sm font-medium hover:bg-canvas">
                 <ShieldCheck className="size-4" aria-hidden /> {t('Rollar va ruxsatlar')}
@@ -229,7 +244,7 @@ function Employees() {
                         ))}
                       </div>
                     </td>
-                    <td className={`${td} text-muted`}>{e.branches.length ? e.branches.map((b) => b.name).join(', ') : t("Barcha filiallar")}</td>
+                    <td className={`${td} text-muted`}>{e.branches.length ? e.branches.map((b) => b.name).join(', ') : e.roles.some((r) => r.code === 'owner') ? t('Barcha filiallar') : <span className="font-medium text-danger">{t('Filial biriktirilmagan')}</span>}</td>
                     <td className={`${td} whitespace-nowrap text-muted tabular-nums`}>{e.last_login_at ? formatDateTime(e.last_login_at) : t("Hali kirmagan")}</td>
                     <td className={td}>
                       <StatusPill tone={e.is_active ? 'success' : 'neutral'}>{e.is_active ? t("Faol") : t("Faol emas")}</StatusPill>
@@ -303,6 +318,7 @@ function EmployeeForm({ employee, roles, branches, onClose }: { employee?: Emplo
   const serverErrors = save.error instanceof ApiError ? save.error.fieldErrors() : {};
   const errors = { ...serverErrors, ...localErrors };
   const duplicate = save.error instanceof ApiError && save.error.code === 'CONFLICT';
+  const ownerSelected = roles.some((r) => r.code === 'owner' && roleIds.includes(r.id));
   const toggleIn = (list: string[], id: string, on: boolean): string[] => (on ? [...list, id] : list.filter((x) => x !== id));
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -312,6 +328,8 @@ function EmployeeForm({ employee, roles, branches, onClose }: { employee?: Emplo
     const local: Record<string, string> = {};
     if (!text('phone') && !text('email')) local.phone = 'Telefon yoki email kiritilishi shart';
     if (roleIds.length === 0) local.role_ids = 'Kamida bitta rol tanlang';
+    // Filialsiz xodim hech narsa ko'rmaydi: faqat direktor (owner) filialsiz bo'lishi mumkin (server ham tekshiradi)
+    if (branchIds.length === 0 && !ownerSelected) local.branch_ids = 'Kamida bitta filial tanlang';
     if (text('password') && text('password').length < 10) local.password = "Parol kamida 10 belgidan iborat bo'lishi kerak";
     setLocalErrors(local);
     if (Object.keys(local).length) return;
@@ -387,10 +405,11 @@ function EmployeeForm({ employee, roles, branches, onClose }: { employee?: Emplo
 
         {branches.length > 0 && (
           <fieldset>
-            <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">{t("Filiallar")}</legend>
-            <p className="mb-3 text-xs text-muted">
-              {branchIds.length === 0 ? t("Hech biri tanlanmasa, xodim barcha filiallarni ko'radi") : t("Xodim faqat tanlangan filiallar ma'lumotini ko'radi")}
-            </p>
+            <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+              {t('Filiallar')}
+              {!ownerSelected && <span className="text-danger"> *</span>}
+            </legend>
+            <p className="mb-3 text-xs text-muted">{ownerSelected && branchIds.length === 0 ? t("Direktor filialsiz bo'lsa, barcha filiallarni ko'radi") : t("Xodim faqat tanlangan filiallar ma'lumotini ko'radi")}</p>
             <div className="grid gap-2 sm:grid-cols-2">
               {branches.map((b) => (
                 <CheckCard key={b.id} title={b.name} checked={branchIds.includes(b.id)} onChange={(on) => setBranchIds((list) => toggleIn(list, b.id, on))} />

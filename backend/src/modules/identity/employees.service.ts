@@ -11,7 +11,7 @@ import { cursorWhere, decodeCursor, toPage } from '../../common/utils/pagination
 import { requirePhone } from '../../common/utils/phone';
 import { hashPassword } from './auth.service';
 import { CreateEmployeeDto, EmployeeQuery, UpdateEmployeeDto } from './dto/employees.dto';
-import { assertCanGrant } from './roles.service';
+import { assertCanGrant, assertCanManageUser } from './roles.service';
 
 const include = {
   roles: { select: { role: { select: { id: true, code: true, name: true } } } },
@@ -103,6 +103,7 @@ export class EmployeesService {
     return this.db.tx(async (tx) => {
       await this.assertRolesAssignable(tx, auth, dto.role_ids);
       await this.assertBranchesExist(tx, branchIds);
+      await this.assertBranchesForRoles(tx, dto.role_ids, branchIds);
       const user = await tx.user.create({
         data: {
           tenantId: auth.tenantId,
@@ -132,6 +133,14 @@ export class EmployeesService {
 
     return this.db.tx(async (tx) => {
       const before = await this.find(tx, auth, id);
+      await assertCanManageUser(tx, auth, id);
+      if (dto.role_ids || branchIds) {
+        await this.assertBranchesForRoles(
+          tx,
+          dto.role_ids ?? before.roles.map((r) => r.role.id),
+          branchIds ?? before.branches.map((b) => b.branch.id),
+        );
+      }
       if (dto.role_ids) {
         await this.assertRolesAssignable(tx, auth, dto.role_ids);
         await tx.userRole.deleteMany({ where: { userId: id } });
@@ -181,6 +190,7 @@ export class EmployeesService {
     if (!isActive && id === auth.userId) throw AppError.conflict("O'zingizni deaktivatsiya qila olmaysiz", 'SELF_DEACTIVATE');
     return this.db.tx(async (tx) => {
       const before = await this.find(tx, auth, id);
+      await assertCanManageUser(tx, auth, id);
       const user = await tx.user.update({ where: { id }, data: { isActive }, include });
       if (!isActive) await this.revokeSessions(tx, id);
       await this.audit.write(tx, auth.tenantId, {
@@ -209,7 +219,7 @@ export class EmployeesService {
 
   private resolveBranches(auth: AuthContext, requested: string[]): string[] {
     const ids = [...new Set(requested)];
-    if (auth.allowedBranchIds.length === 0) return ids;
+    if (auth.allBranches) return ids;
     // Cheklangan foydalanuvchi "barcha filiallar" yoki begona filialni bera olmaydi
     if (ids.length === 0) throw AppError.field('branch_ids', 'REQUIRED', 'Kamida bitta filial tanlang');
     if (!ids.every((id) => canAccessBranch(auth, id))) throw AppError.forbidden("Bu filialga ruxsatingiz yo'q");
@@ -220,6 +230,13 @@ export class EmployeesService {
     if (!ids.length) return;
     const found = await tx.branch.count({ where: { id: { in: ids } } });
     if (found !== ids.length) throw AppError.field('branch_ids', 'NOT_FOUND', 'Filial topilmadi');
+  }
+
+  /** Filialsiz xodim hech narsa ko'ra olmaydi — faqat direktor (owner) filialsiz bo'lib, hamma filialni ko'radi */
+  private async assertBranchesForRoles(tx: Tx, roleIds: string[], branchIds: string[]): Promise<void> {
+    if (branchIds.length) return;
+    const roles = await tx.role.findMany({ where: { id: { in: [...new Set(roleIds)] } }, select: { code: true } });
+    if (!roles.some((r) => r.code === 'owner')) throw AppError.field('branch_ids', 'REQUIRED', "Kamida bitta filial tanlang: filialsiz xodim hech narsa ko'ra olmaydi");
   }
 
   private async assertRolesAssignable(tx: Tx, auth: AuthContext, roleIds: string[]): Promise<void> {

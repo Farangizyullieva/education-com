@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { Check, Clock, FileCheck, Search, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { LessonLearning } from '@/components/lms-teacher';
 import { ReceiptDialog } from '@/components/receipt';
 import { useToast } from '@/components/toast';
 import { Avatar, Button, Drawer, ErrorNote, Field, Modal, SelectField, StatusPill } from '@/components/ui';
@@ -419,6 +420,7 @@ export function LessonDialog({ lessonId, onClose }: { lessonId: string; onClose:
   const roster = useQuery({ queryKey: ['lessons', lessonId, 'attendance'], queryFn: () => api<Roster>(`/lessons/${lessonId}/attendance`) });
   const [marks, setMarks] = useState<Record<string, Mark>>({});
   const [cancelling, setCancelling] = useState(false);
+  const [learning, setLearning] = useState(false);
   useEffect(() => {
     if (roster.data) setMarks(Object.fromEntries(roster.data.students.map((s) => [s.id, s.status ?? 'present'])));
   }, [roster.data]);
@@ -530,6 +532,18 @@ export function LessonDialog({ lessonId, onClose }: { lessonId: string; onClose:
                   </li>
                 ))}
               </ul>
+            )}
+            {!future && !cancelled && (can('homework.manage') || can('material.manage')) && (
+              <div>
+                <Button variant={learning ? 'secondary' : 'primary'} onClick={() => setLearning((v) => !v)} aria-expanded={learning}>
+                  {learning ? 'Vazifa va videoni yopish' : 'Dars uchun vazifa / video'}
+                </Button>
+                {learning && (
+                  <div className="mt-3">
+                    <LessonLearning unitId={lesson.study_unit.id} lessonId={lesson.id} />
+                  </div>
+                )}
+              </div>
             )}
             {save.isError && <ErrorNote>{save.error.message}</ErrorNote>}
             <div className="flex flex-wrap justify-between gap-2">

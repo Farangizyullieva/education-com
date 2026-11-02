@@ -88,7 +88,14 @@ async function clear(tx: Prisma.TransactionClient): Promise<void> {
   // faqat shu (lokal, jadval egasi nomidan ishlaydigan) skriptda vaqtincha o'chiriladi.
   const studentIds = students.map((s) => s.id);
   const units = await tx.studyUnit.findMany({ where: { name: { in: GROUPS.map((g) => g.name) } }, select: { id: true } });
-  const unitIds = units.map((u) => u.id);
+  // Demo o'qituvchisiga biriktirilgan, lekin demo ro'yxatida bo'lmagan guruhlar (qo'lda yaratilgan yoki eski demo qoldig'i).
+  // Ular o'qituvchini o'chirishga to'sqinlik qiladi. Odatda o'chirilmaydi (haqiqiy o'quvchilar yozilgan bo'lishi mumkin):
+  // `DEMO_FORCE=1 pnpm db:demo` bilan ular ham guruh, dars va yozilishlari bilan birga o'chiriladi.
+  const extra = await tx.studyUnit.findMany({ where: { teacherId: { in: userIds }, id: { notIn: units.map((u) => u.id) } }, select: { id: true, name: true } });
+  if (extra.length && process.env.DEMO_FORCE !== '1') {
+    throw new Error(`Demo o'qituvchilarga biriktirilgan boshqa guruhlar bor: ${extra.map((e) => e.name).join(', ')}.\nAvval ularni ilovada boshqa o'qituvchiga o'tkazing yoki o'chiring.\nYoki ularni ham o'chirish uchun: DEMO_FORCE=1 pnpm db:demo`);
+  }
+  const unitIds = [...units, ...extra].map((u) => u.id);
   await tx.attendance.deleteMany({ where: { OR: [{ studentId: { in: studentIds } }, { lesson: { studyUnitId: { in: unitIds } } }] } });
   await tx.$executeRaw`ALTER TABLE ledger_entries DISABLE TRIGGER ledger_entries_append_only`;
   await tx.ledgerEntry.deleteMany({ where: { studentId: { in: studentIds } } });
@@ -127,10 +134,14 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
 
   const branchIds = [main.id];
   for (const b of BRANCHES) {
-    const branch = await tx.branch.create({ data: { tenantId, name: b.name, code: b.code, address: b.address, phone: b.phone, workingHours: '09:00–21:00' } });
+    // Namuna filialida qo'lda qo'shilgan haqiqiy o'quvchi bo'lsa, tozalash uni o'chirmaydi — shunda filial qayta ishlatiladi
+    const existing = await tx.branch.findFirst({ where: { code: b.code } });
+    const branch = existing ?? (await tx.branch.create({ data: { tenantId, name: b.name, code: b.code, address: b.address, phone: b.phone, workingHours: '09:00–21:00' } }));
+    if (existing && !existing.isActive) await tx.branch.update({ where: { id: existing.id }, data: { isActive: true } });
     branchIds.push(branch.id);
     await tx.classroom.createMany({
       data: b.rooms.map((name, i) => ({ tenantId, branchId: branch.id, name, capacity: 10 + ((i * 4) % 11), equipment: i % 2 ? 'Proyektor, doska' : 'Doska' })),
+      skipDuplicates: true,
     });
   }
 
@@ -148,7 +159,8 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
         email: `${e.name.split(' ')[1]?.toLowerCase()}${EMAIL_DOMAIN}`,
         passwordHash,
         roles: { create: { tenantId, roleId: roles.get(e.role) as string } },
-        branches: e.branch === undefined ? undefined : { create: { tenantId, branchId: branchIds[e.branch + 1] as string } },
+        // Har bir xodim kamida bitta filialga biriktiriladi (filialsiz xodim hech narsa ko'rmaydi). Umumiy rollar — barcha namuna filiallar
+        branches: { create: (e.branch === undefined ? branchIds : [branchIds[e.branch + 1] as string]).map((branchId) => ({ tenantId, branchId })) },
       },
     });
     if (e.role === 'sales_manager' || e.role === 'administrator') owners.push(user.id);
@@ -211,6 +223,7 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
   const pool = new Map<string, typeof created>(branchIds.map((id) => [id, created.filter((c) => c.branchId === id && c.status !== 'new')]));
   let lessonsTotal = 0;
   let marksTotal = 0;
+  const unitsData: { id: string; name: string; subject: string; teacherId: string; members: typeof created }[] = [];
 
   for (const g of GROUPS) {
     const branchId = branchIds[g.branch] as string;
@@ -240,6 +253,8 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
       await tx.enrollment.create({ data: { tenantId, studentId: m.id, studyUnitId: unit.id, startDate, endDate: m.status === 'finished' && startDate < day(-3) ? day(-3) : null, priceAmount: unit.priceAmount } });
     }
 
+    unitsData.push({ id: unit.id, name: g.name, subject: g.subject, teacherId: unit.teacherId as string, members });
+
     // Oylik abonement: har bir boshlangan oy uchun bitta yechim (davomatga bog'liq emas)
     await chargeSubscriptions(tx, tenantId, today, { studyUnitId: unit.id });
 
@@ -259,8 +274,143 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
     if (g.paused) await tx.studyUnit.update({ where: { id: unit.id }, data: { status: 'paused' } });
   }
 
+  // --- Ta'lim: materiallar, uy vazifalari va javoblar (o'qituvchi "tekshirilishi kerak" ro'yxati va o'quvchi kabineti to'lishi uchun) ---
+  const MATERIALS: Record<string, { title: string; description: string; link: string }[]> = {
+    'Ingliz tili': [
+      { title: 'BBC Learning English', description: "Grammatika va lug'at bo'yicha qisqa video darslar", link: 'https://www.bbc.co.uk/learningenglish' },
+      { title: 'VOA Learning English', description: "Sekin tezlikdagi yangiliklar — tinglab tushunish mashqi", link: 'https://learningenglish.voanews.com' },
+      { title: "Irregular verbs ro'yxati", description: "Har dars oldidan 10 ta fe'lni yodlang", link: 'https://www.englishpage.com/irregularverbs/irregularverbs.html' },
+    ],
+    Backend: [
+      { title: 'Node.js rasmiy hujjatlari', description: 'API ma\'lumotnomasi', link: 'https://nodejs.org/docs/latest/api/' },
+      { title: 'NestJS hujjatlari', description: "Controller, service va module'lar", link: 'https://docs.nestjs.com' },
+      { title: 'PostgreSQL qo\'llanma', description: 'SQL asoslari va indekslar', link: 'https://www.postgresql.org/docs/current/tutorial.html' },
+    ],
+    Frontend: [
+      { title: 'MDN Learn Web Development', description: 'HTML, CSS va JavaScript asoslari', link: 'https://developer.mozilla.org/en-US/docs/Learn' },
+      { title: 'React: Quick Start', description: 'Komponentlar va state', link: 'https://react.dev/learn' },
+      { title: 'CSS Flexbox o\'yini', description: "Flexbox'ni o'yin orqali o'rganing", link: 'https://flexboxfroggy.com' },
+    ],
+  };
+  const ASSIGNMENTS: Record<string, { title: string; description: string }[]> = {
+    'Ingliz tili': [
+      { title: 'Unit 3: Past Simple mashqlari', description: "Darslikdagi 4–6-mashqlarni bajaring va 10 ta o'z gapingizni yozing." },
+      { title: 'Essay: My Weekend', description: '80–100 so\'zdan iborat insho yozing. Past Simple ishlating.' },
+      { title: "Listening: BBC 6 Minute English", description: "Tanlangan epizodni tinglab, 5 ta yangi so'zni izohlang." },
+    ],
+    Backend: [
+      { title: 'REST API: Todo ro\'yxati', description: 'CRUD endpointlarini yozing va Postman collection yuboring.' },
+      { title: 'SQL: JOIN mashqlari', description: "3 ta jadval bo'yicha JOIN so'rovlari (fayl sifatida .sql yuboring)." },
+      { title: 'DTO validatsiya', description: "class-validator bilan ro'yxatdan o'tish DTO'sini yozing." },
+    ],
+    Frontend: [
+      { title: 'Landing sahifa maketi', description: "Berilgan maket bo'yicha HTML/CSS sahifa (responsive)." },
+      { title: 'JavaScript: massivlar', description: "map, filter va reduce bilan 8 ta mashq." },
+      { title: 'React: counter komponenti', description: "useState bilan hisoblagich va reset tugmasi." },
+    ],
+  };
+  const ANSWERS = ["Vazifani bajardim, javoblar ilovada.", 'Hammasini qildim, bitta joyini tushunmadim.', 'Mana mening ishim. Tekshirib bering, iltimos.', 'Vazifa tayyor. Qo\'shimcha savollarim bor.'];
+  const FEEDBACK = ['Yaxshi ish! Xatolarni qayta ko\'rib chiqing.', 'Aʼlo! Shunday davom eting.', 'Yaxshi, lekin batafsilroq yozish kerak edi.', "Asosiy g'oya to'g'ri, imlo xatolariga e'tibor bering.", 'Juda yaxshi tuzilgan, barakalla!'];
+  const DUE = [-7, 1, 6];
+  const SUBMIT_RATE = [0.85, 0.4, 0.1];
+  let materialsTotal = 0;
+  let assignmentsTotal = 0;
+  let submissionsTotal = 0;
+  for (const u of unitsData) {
+    // O'tgan darslar: vazifa va video aynan o'sha darsga bog'lanadi (o'qituvchi "dars o'tgach vazifa berish" oqimi)
+    const pastLessons = await tx.lesson.findMany({ where: { studyUnitId: u.id, date: { lt: day(0) } }, orderBy: { startAt: 'desc' }, take: 4, select: { id: true } });
+    if (pastLessons[0]) {
+      await tx.material.create({ data: { tenantId, studyUnitId: u.id, lessonId: pastLessons[0].id, title: "Oxirgi dars videosi", description: "Darsning yozuvi — o'tirib qolgan bo'lsangiz, ko'rib chiqing", link: 'https://www.youtube.com/@freecodecamp', createdBy: u.teacherId, createdAt: new Date(now - 86_400_000) } });
+      materialsTotal++;
+    }
+    for (const [i, m] of (MATERIALS[u.subject] ?? []).entries()) {
+      await tx.material.create({ data: { tenantId, studyUnitId: u.id, title: m.title, description: m.description, link: m.link, createdBy: u.teacherId, createdAt: new Date(now - (20 - i * 6) * 86_400_000) } });
+      materialsTotal++;
+    }
+    for (const [i, a] of (ASSIGNMENTS[u.subject] ?? []).entries()) {
+      const due = day(DUE[i] as number);
+      const assignment = await tx.assignment.create({ data: { tenantId, studyUnitId: u.id, lessonId: i === 0 ? (pastLessons[2]?.id ?? null) : i === 1 ? (pastLessons[0]?.id ?? null) : null, title: a.title, description: a.description, dueDate: due, maxScore: 100, createdBy: u.teacherId, createdAt: new Date(due.getTime() - 9 * 86_400_000) } });
+      assignmentsTotal++;
+      for (const m of u.members) {
+        if (m.status === 'finished' || rnd() > (SUBMIT_RATE[i] as number)) continue;
+        const gradeIt = i === 0 && rnd() < 0.7; // faqat muddati o'tgan vazifaning ko'pi baholangan, qolganlari tekshirilishi kutilmoqda
+        await tx.submission.create({
+          data: {
+            tenantId,
+            assignmentId: assignment.id,
+            studentId: m.id,
+            text: pick(ANSWERS),
+            submittedAt: new Date(Math.min(now, due.getTime()) - Math.floor(rnd() * 3 * 86_400_000)),
+            score: gradeIt ? 55 + Math.floor(rnd() * 46) : null,
+            feedback: gradeIt ? pick(FEEDBACK) : null,
+            gradedBy: gradeIt ? u.teacherId : null,
+            gradedAt: gradeIt ? new Date(due.getTime() + 86_400_000) : null,
+          },
+        });
+        submissionsTotal++;
+        // Coinlar: topshirgani uchun +10, baholangan bo'lsa ball foiziga qarab bonus (ilovadagi qoidalar bilan bir xil)
+        await tx.coinTransaction.create({ data: { tenantId, studentId: m.id, amount: 10, reason: 'homework_submit', refId: assignment.id } });
+        if (gradeIt) await tx.coinTransaction.create({ data: { tenantId, studentId: m.id, amount: 8 + Math.floor(rnd() * 13), reason: 'homework_grade', refId: assignment.id } });
+      }
+    }
+  }
+
+  // --- Savollar (gamifikatsiya): har bir guruhga o'z fani bo'yicha test savollari ---
+  const QUESTIONS: Record<string, { text: string; options: string[]; correct: number; explanation: string; coins: number }[]> = {
+    'Ingliz tili': [
+      { text: "Which sentence is in Past Simple?", options: ['I go to school.', 'I went to school.', 'I am going to school.'], correct: 1, explanation: "'went' — go fe'lining o'tgan zamon shakli.", coins: 5 },
+      { text: "Choose the correct article: ___ apple a day.", options: ['A', 'An', 'The'], correct: 1, explanation: "Unli tovush bilan boshlanadigan so'z oldidan 'an' ishlatiladi.", coins: 5 },
+      { text: "What is the plural of 'child'?", options: ['childs', 'children', 'childes'], correct: 1, explanation: "'child' — noto'g'ri ko'plik: children.", coins: 7 },
+    ],
+    Backend: [
+      { text: "HTTP da yangi resurs yaratish uchun odatda qaysi metod ishlatiladi?", options: ['GET', 'POST', 'DELETE'], correct: 1, explanation: "POST — yangi yozuv yaratadi.", coins: 5 },
+      { text: "SQL da ikki jadvalni bog'lash uchun qaysi kalit so'z ishlatiladi?", options: ['MERGE', 'JOIN', 'UNION ALL'], correct: 1, explanation: "JOIN jadvallarni umumiy ustun bo'yicha bog'laydi.", coins: 5 },
+      { text: "401 status kodi nimani bildiradi?", options: ['Topilmadi', 'Kirish talab qilinadi (avtorizatsiya yo\'q)', 'Server xatosi'], correct: 1, explanation: "401 — foydalanuvchi tizimga kirmagan; 403 — ruxsat yo'q.", coins: 7 },
+    ],
+    Frontend: [
+      { text: "CSS da elementni gorizontal markazlash uchun flex konteynerda qaysi xossa ishlatiladi?", options: ['align-items', 'justify-content', 'z-index'], correct: 1, explanation: "justify-content asosiy o'q bo'ylab joylashtiradi.", coins: 5 },
+      { text: "JavaScript da massivning har bir elementini o'zgartirib yangi massiv qaytaradigan metod?", options: ['filter', 'map', 'forEach'], correct: 1, explanation: "map yangi massiv qaytaradi; forEach hech narsa qaytarmaydi.", coins: 5 },
+      { text: "React da komponent holatini saqlash uchun qaysi hook ishlatiladi?", options: ['useState', 'useRoute', 'useStyle'], correct: 0, explanation: "useState holatni saqlaydi.", coins: 7 },
+    ],
+  };
+  const questionsByUnit = new Map<string, { id: string; correct: number; coins: number }[]>();
+  let questionsTotal = 0;
+  for (const u of unitsData) {
+    const made: { id: string; correct: number; coins: number }[] = [];
+    for (const q of QUESTIONS[u.subject] ?? []) {
+      const row = await tx.quizQuestion.create({ data: { tenantId, studyUnitId: u.id, text: q.text, options: q.options, correctIndex: q.correct, explanation: q.explanation, coins: q.coins, createdBy: u.teacherId } });
+      made.push({ id: row.id, correct: q.correct, coins: q.coins });
+      questionsTotal++;
+    }
+    questionsByUnit.set(u.id, made);
+  }
+
+  // --- O'quvchi kabineti: birinchi guruhlardan bir nechta faol o'quvchiga kirish ochiladi (login — telefon) ---
+  const portalPick = unitsData.slice(0, 3).flatMap((u) => u.members.filter((m) => m.status === 'active' || m.status === 'new').slice(0, 2));
+  const studentRole = roles.get('student');
+  const portalLogins: { name: string; phone: string }[] = [];
+  if (studentRole) {
+    for (const m of portalPick) {
+      const st = await tx.student.findUniqueOrThrow({ where: { id: m.id }, select: { client: { select: { fullName: true, phone: true } } } });
+      if (!st.client.phone) continue;
+      const user = await tx.user.create({ data: { tenantId, phone: st.client.phone, fullName: st.client.fullName, passwordHash, roles: { create: { tenantId, roleId: studentRole } }, branches: { create: { tenantId, branchId: m.branchId } } } });
+      await tx.student.update({ where: { id: m.id }, data: { portalUserId: user.id } });
+      portalLogins.push({ name: st.client.fullName, phone: st.client.phone });
+      // Kabinet ochilgan o'quvchilar bir-ikki savolga javob bergan (kimdir xato, kimdir to'g'ri)
+      const unit = unitsData.find((u) => u.members.some((x) => x.id === m.id));
+      for (const [k, q] of (questionsByUnit.get(unit?.id ?? '') ?? []).slice(0, 2).entries()) {
+        const ok = rnd() < 0.7 || k === 0;
+        await tx.quizAnswer.create({ data: { tenantId, questionId: q.id, studentId: m.id, choice: ok ? q.correct : (q.correct + 1) % 3, isCorrect: ok } });
+        if (ok) await tx.coinTransaction.create({ data: { tenantId, studentId: m.id, amount: q.coins, reason: 'quiz', refId: q.id } });
+      }
+    }
+  }
+
   // Lidlar: sotuv voronkasining har bosqichida bir nechtadan (faqat demo filiallarda)
   const LEAD_STAGES: [LeadStage, number][] = [['new', 7], ['contacted', 6], ['trial', 4], ['contract', 3], ['lost', 4]];
+  const SCHOOLS = ['12-maktab', '25-maktab', '3-sonli litsey', '45-maktab', 'IT Park litseyi'];
+  const LEAD_NOTES = ["Kechki guruh kerak, narxni so'radi", 'Opasi tavsiya qildi, sinov darsiga kelmoqchi', 'Instagramdan yozdi, jadval qiziqtiradi'];
+  const LEAD_ACTIVITY = { call: "Qo'ng'iroq qilindi: guruh va narx haqida gaplashildi", message: 'Telegramga jadval va narx yuborildi', visit: 'Markazga kelib, xonalar bilan tanishdi' } as const;
   const LOST = ['Narx qimmatlik qildi', "Vaqti to'g'ri kelmadi", 'Boshqa markazni tanladi', "Telefonga javob bermayapti"];
   const leadDict = (kind: string) => dict.filter((d) => d.kind === kind);
   let leadNo = 0;
@@ -268,22 +418,48 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
     for (let i = 0; i < count; i++) {
       leadNo++;
       const at = new Date(Date.now() - Math.floor(rnd() * 20 * 86_400_000) - 3_600_000);
+      const open = stage !== 'lost';
+      const child = rnd() < 0.7; // ko'pchilik lid bola nomidan, ota-ona murojaat qiladi
+      const gender = rnd() < 0.5 ? 'female' : 'male';
+      const parentGender = rnd() < 0.7 ? 'female' : 'male';
+      // Keyingi bog'lanish: ba'zilari muddati o'tgan, ba'zilari bugun, qolganlari kelgusida
+      const followRoll = rnd();
+      const nextContactAt = !open ? null : followRoll < 0.3 ? new Date(Date.now() - (1 + Math.floor(rnd() * 3)) * 86_400_000) : followRoll < 0.55 ? new Date(`${today}T18:00:00+05:00`) : new Date(Date.now() + (1 + Math.floor(rnd() * 5)) * 86_400_000);
       const lead = await tx.lead.create({
         data: {
           tenantId,
           branchId: branchIds[leadNo % branchIds.length] as string,
-          fullName: fullName(rnd() < 0.5 ? 'female' : 'male'),
-          phone: phone(5000 + leadNo),
+          fullName: fullName(gender),
+          phone: child ? null : phone(5000 + leadNo),
+          gender,
+          birthDate: child ? new Date(Date.UTC(new Date().getUTCFullYear() - (7 + Math.floor(rnd() * 11)), Math.floor(rnd() * 12), 1 + Math.floor(rnd() * 28))) : null,
+          guardianName: child ? fullName(parentGender) : null,
+          guardianRelation: child ? (parentGender === 'female' ? 'Ona' : 'Ota') : null,
+          guardianPhone: child ? phone(5000 + leadNo) : null,
+          school: child ? pick(SCHOOLS) : null,
+          preferredTime: pick(['morning', 'afternoon', 'evening', 'evening', 'weekend']),
+          temperature: stage === 'contract' ? 'hot' : stage === 'lost' ? 'cold' : pick(['hot', 'warm', 'warm', 'cold']),
+          nextContactAt,
+          trialAt: stage === 'trial' ? new Date(Date.now() + (1 + Math.floor(rnd() * 4)) * 86_400_000) : null,
           disciplineId: leadDict('discipline').length ? pick(leadDict('discipline')).id : null,
+          levelId: leadDict('level').length ? pick(leadDict('level')).id : null,
           adSourceId: leadDict('ad_source').length ? pick(leadDict('ad_source')).id : null,
           ownerId: owners.length ? (owners[leadNo % owners.length] as string) : null,
           stage,
           lostReason: stage === 'lost' ? pick(LOST) : null,
+          note: stage === 'new' ? pick(LEAD_NOTES) : null,
           createdAt: at,
           lastActivityAt: at,
         },
       });
       await tx.leadEvent.create({ data: { tenantId, leadId: lead.id, type: 'created', toStage: 'new', createdAt: at } });
+      // Birinchi bosqichdan keyingi lidlarda faoliyat tarixi: qo'ng'iroq, xabar, tashrif
+      if (stage !== 'new') {
+        const kinds = ['call', 'message', 'visit'] as const;
+        for (const [k, kind] of kinds.slice(0, 1 + (leadNo % 3)).entries()) {
+          await tx.leadEvent.create({ data: { tenantId, leadId: lead.id, type: kind, text: LEAD_ACTIVITY[kind], actorId: owners.length ? (owners[leadNo % owners.length] as string) : null, createdAt: new Date(at.getTime() + (k + 1) * 3_600_000 * 5) } });
+        }
+      }
     }
   }
 
@@ -310,7 +486,13 @@ async function fill(tx: Prisma.TransactionClient, tenantId: string): Promise<voi
     ON CONFLICT (tenant_id, kind, year) DO UPDATE SET last_value = GREATEST(number_sequences.last_value, EXCLUDED.last_value)`;
 
   console.log(`qo'shildi: ${BRANCHES.length} filial, ${EMPLOYEES.length} xodim, ${STUDENTS} o'quvchi`);
-  console.log(`namuna xodimlar paroli: ${DEMO_PASSWORD} (masalan, telefon +998901000003 — administrator)`);
+  console.log(`ta'lim: ${materialsTotal} material, ${assignmentsTotal} vazifa, ${submissionsTotal} javob, ${questionsTotal} savol; kabinet ochilgan o'quvchilar: ${portalLogins.length}`);
+  const ROLE_LABEL: Record<string, string> = { branch_manager: 'Filial boshqaruvchisi', administrator: 'Administrator (reception)', sales_manager: 'Sotuv menejeri', teacher: "O'qituvchi", accountant: 'Buxgalter' };
+  console.log('\n=== NAMUNA AKKAUNTLAR (har bir rol uchun) ===');
+  console.log(`Direktor (owner)          : ${process.env.SEED_OWNER_PHONE ?? '(.env: SEED_OWNER_PHONE)'}  /  parol: .env dagi SEED_OWNER_PASSWORD`);
+  for (const [i, e] of EMPLOYEES.entries()) console.log(`${(ROLE_LABEL[e.role] ?? e.role).padEnd(26)}: +9989010000${String(i + 1).padStart(2, '0')}  /  ${DEMO_PASSWORD}   (${e.name})`);
+  for (const p of portalLogins) console.log(`${"O'quvchi (kabinet)".padEnd(26)}: ${p.phone}  /  ${DEMO_PASSWORD}   (${p.name})`);
+  console.log("Xodimlar kirish sahifasi: /login · o'quvchilar: o'quvchi kirish sahifasi (telefon + parol)");
 }
 
 async function main(): Promise<void> {

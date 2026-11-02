@@ -3,7 +3,7 @@ import { Body, Controller, Delete, Get, HttpCode, Injectable, Module, Param, Par
 import { FileInterceptor } from '@nestjs/platform-express';
 import { verify } from '@node-rs/argon2';
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { Prisma } from '@prisma/client';
 import { AuditService } from '../../common/audit/audit.service';
 import { Portal, RequirePermission } from '../../common/auth/decorators';
@@ -11,6 +11,7 @@ import { RequestContextStore } from '../../common/context/request-context';
 import { PrismaService, Tx } from '../../common/db/prisma.service';
 import { FilesService, MAX_PHOTO_BYTES } from '../../common/files/files.service';
 import { documentUpload, originalName } from '../lms/lms.module';
+import { awardCoins, COINS, coinBalance } from '../lms/gamification';
 import { AppError } from '../../common/http/app-error';
 import { parseDateOnly, toDateOnly } from '../../common/utils/dates';
 import { todayIn } from '../academic/domain';
@@ -26,6 +27,10 @@ const tempPassword = (): string => String(randomInt(100_000, 1_000_000));
 class EnablePortalDto {
   /** Admin yozgan parol; berilmasa tizim 6 xonali raqam yaratadi */
   @IsOptional() @IsString() @MinLength(6) @MaxLength(100) password?: string;
+}
+
+class QuizAnswerDto {
+  @IsInt() @Min(0) @Max(4) choice!: number;
 }
 
 class SubmitDto {
@@ -230,7 +235,7 @@ export class PortalService {
     return [...new Set(rows.map((r) => r.studyUnitId))];
   }
 
-  private assignmentView(tenantId: string, today: string, a: Prisma.AssignmentGetPayload<{ include: { file: true; studyUnit: { select: { id: true; number: true; name: true } }; submissions: { include: { file: true } } } }>) {
+  private assignmentView(tenantId: string, today: string, a: Prisma.AssignmentGetPayload<{ include: { file: true; lesson: { select: { id: true; date: true } }; studyUnit: { select: { id: true; number: true; name: true } }; submissions: { include: { file: true } } } }>) {
     const mine = a.submissions[0] ?? null;
     const due = toDateOnly(a.dueDate);
     return {
@@ -241,6 +246,7 @@ export class PortalService {
       max_score: a.maxScore,
       file: this.fileView(tenantId, a.file),
       group: { id: a.studyUnit.id, number: a.studyUnit.number, name: a.studyUnit.name },
+      lesson: a.lesson && { id: a.lesson.id, date: toDateOnly(a.lesson.date) },
       created_at: a.createdAt,
       // new — hali topshirilmagan; overdue — muddati o'tgan; submitted — tekshirilmoqda; graded — baholangan
       status: mine?.score != null ? 'graded' : mine ? 'submitted' : due && due < today ? 'overdue' : 'new',
@@ -257,7 +263,7 @@ export class PortalService {
       const rows = await tx.assignment.findMany({
         where: { studyUnitId: groupId ? { in: units.includes(groupId) ? [groupId] : [] } : { in: units } },
         orderBy: { createdAt: 'desc' },
-        include: { file: true, studyUnit: { select: { id: true, number: true, name: true } }, submissions: { where: { studentId: self.id }, include: { file: true } } },
+        include: { file: true, lesson: { select: { id: true, date: true } }, studyUnit: { select: { id: true, number: true, name: true } }, submissions: { where: { studentId: self.id }, include: { file: true } } },
       });
       return rows.map((a) => this.assignmentView(auth.tenantId, today, a));
     });
@@ -271,9 +277,9 @@ export class PortalService {
       const rows = await tx.material.findMany({
         where: { studyUnitId: groupId ? { in: units.includes(groupId) ? [groupId] : [] } : { in: units } },
         orderBy: { createdAt: 'desc' },
-        include: { file: true, studyUnit: { select: { id: true, number: true, name: true } } },
+        include: { file: true, lesson: { select: { id: true, date: true } }, studyUnit: { select: { id: true, number: true, name: true } } },
       });
-      return rows.map((m) => ({ id: m.id, title: m.title, description: m.description, link: m.link, file: this.fileView(auth.tenantId, m.file), group: { id: m.studyUnit.id, number: m.studyUnit.number, name: m.studyUnit.name }, created_at: m.createdAt }));
+      return rows.map((m) => ({ id: m.id, title: m.title, description: m.description, link: m.link, file: this.fileView(auth.tenantId, m.file), lesson: m.lesson && { id: m.lesson.id, date: toDateOnly(m.lesson.date) }, group: { id: m.studyUnit.id, number: m.studyUnit.number, name: m.studyUnit.name }, created_at: m.createdAt }));
     });
   }
 
@@ -284,7 +290,7 @@ export class PortalService {
     return this.db.tx(async (tx) => {
       const self = await this.self(tx);
       const units = await this.myUnitIds(tx, self.id, todayIn(self.timeZone));
-      const assignment = await tx.assignment.findFirst({ where: { id: assignmentId, studyUnitId: { in: units } }, select: { id: true, title: true } });
+      const assignment = await tx.assignment.findFirst({ where: { id: assignmentId, studyUnitId: { in: units } }, select: { id: true, title: true, dueDate: true } });
       if (!assignment) throw AppError.notFound('Vazifa');
       const existing = await tx.submission.findUnique({ where: { assignmentId_studentId: { assignmentId, studentId: self.id } } });
       if (existing?.score != null) throw AppError.conflict("Vazifa baholangan — javobni o'zgartirib bo'lmaydi", 'ALREADY_GRADED');
@@ -296,6 +302,9 @@ export class PortalService {
       });
       // Yangi fayl yuklansa eskisi o'chiriladi
       if (existing?.fileId && existing.fileId !== fileId) await this.files.remove(tx, existing.fileId);
+      // Coin: o'z vaqtida +10, kechiktirib +5; bir vazifa uchun bir marta (qayta topshirish ko'paytirmaydi)
+      const due = toDateOnly(assignment.dueDate);
+      await awardCoins(tx, auth.tenantId, self.id, 'homework_submit', assignment.id, due && todayIn(self.timeZone) > due ? COINS.submitLate : COINS.submitOnTime);
       await this.audit.write(tx, auth.tenantId, { action: 'submission.submitted', entityType: 'student', entityId: self.id, newValue: { title: assignment.title } });
     });
   }
@@ -362,6 +371,74 @@ export class PortalService {
         result.push({ group: unit, rows });
       }
       return result;
+    });
+  }
+
+  // ------------------------------------------------ gamifikatsiya: coinlar, savollar, reyting
+
+  private readonly reasonLabel: Record<string, string> = { homework_submit: 'Vazifa topshirildi', homework_grade: 'Vazifa uchun baho', quiz: "Savolga to'g'ri javob" };
+
+  /** Coin balansi, so'nggi harakatlar va guruhdoshlar orasidagi o'rin (guruhdoshlarning ismi qisqartirib ko'rsatiladi) */
+  coins() {
+    return this.db.tx(async (tx) => {
+      const self = await this.self(tx);
+      const today = todayIn(self.timeZone);
+      const balance = await coinBalance(tx, self.id);
+      const history = await tx.coinTransaction.findMany({ where: { studentId: self.id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, amount: true, reason: true, createdAt: true } });
+      const unitIds = await this.myUnitIds(tx, self.id, today);
+      const mates = await tx.enrollment.findMany({ where: { studyUnitId: { in: unitIds }, OR: [{ endDate: null }, { endDate: { gt: parseDateOnly(today) } }] }, select: { studentId: true, student: { select: { client: { select: { fullName: true } } } } } });
+      const names = new Map(mates.map((m) => [m.studentId, m.student.client.fullName]));
+      const sums = await tx.coinTransaction.groupBy({ by: ['studentId'], where: { studentId: { in: [...names.keys()] } }, _sum: { amount: true } });
+      const totals = new Map(sums.map((s) => [s.studentId, s._sum.amount ?? 0]));
+      const short = (full: string): string => {
+        const [first, second] = full.trim().split(/\s+/);
+        return second ? `${first} ${second.charAt(0)}.` : (first ?? full);
+      };
+      const board = [...names.keys()]
+        .map((id) => ({ id, name: short(names.get(id) as string), coins: totals.get(id) ?? 0 }))
+        .sort((a, b) => b.coins - a.coins || a.name.localeCompare(b.name))
+        .map((r, i) => ({ place: i + 1, name: r.name, coins: r.coins, me: r.id === self.id }));
+      return {
+        balance,
+        history: history.map((h) => ({ id: h.id, amount: h.amount, reason: h.reason, label: this.reasonLabel[h.reason] ?? h.reason, created_at: h.createdAt })),
+        leaderboard: board.slice(0, 10),
+        me: board.find((r) => r.me) ?? null,
+        rules: { submit_on_time: COINS.submitOnTime, submit_late: COINS.submitLate, grade_bonus_max: COINS.gradeBonusMax },
+      };
+    });
+  }
+
+  /** Hali javob berilmagan savollar (o'quvchining hozirgi guruhlaridan). To'g'ri javob yuborilmaydi */
+  quiz() {
+    return this.db.tx(async (tx) => {
+      const self = await this.self(tx);
+      const units = await this.myUnitIds(tx, self.id, todayIn(self.timeZone));
+      const rows = await tx.quizQuestion.findMany({
+        where: { studyUnitId: { in: units }, answers: { none: { studentId: self.id } } },
+        orderBy: { createdAt: 'asc' },
+        take: 20,
+        select: { id: true, text: true, options: true, coins: true, studyUnit: { select: { id: true, name: true } } },
+      });
+      const answered = await tx.quizAnswer.count({ where: { studentId: self.id } });
+      return { answered, remaining: rows.length, questions: rows.map((q) => ({ id: q.id, text: q.text, options: q.options as string[], coins: q.coins, group: q.studyUnit })) };
+    });
+  }
+
+  /** Savolga javob: bir savolga bir marta; to'g'ri bo'lsa coin beriladi. Faqat o'z guruhining savoli */
+  answerQuiz(questionId: string, choice: number) {
+    const auth = RequestContextStore.auth();
+    return this.db.tx(async (tx) => {
+      const self = await this.self(tx);
+      const units = await this.myUnitIds(tx, self.id, todayIn(self.timeZone));
+      const q = await tx.quizQuestion.findFirst({ where: { id: questionId, studyUnitId: { in: units } } });
+      if (!q) throw AppError.notFound('Savol');
+      const options = q.options as string[];
+      if (choice >= options.length) throw AppError.field('choice', 'OUT_OF_RANGE', "Variant noto'g'ri");
+      if (await tx.quizAnswer.findUnique({ where: { questionId_studentId: { questionId, studentId: self.id } } })) throw AppError.conflict('Bu savolga javob bergansiz', 'ALREADY_ANSWERED');
+      const correct = choice === q.correctIndex;
+      await tx.quizAnswer.create({ data: { tenantId: auth.tenantId, questionId, studentId: self.id, choice, isCorrect: correct } });
+      const earned = correct ? await awardCoins(tx, auth.tenantId, self.id, 'quiz', q.id, q.coins) : 0;
+      return { correct, correct_index: q.correctIndex, explanation: q.explanation, coins_earned: earned, balance: await coinBalance(tx, self.id) };
     });
   }
 
@@ -468,6 +545,25 @@ export class PortalController {
   @Get('portal/stats')
   stats() {
     return this.portal.stats();
+  }
+
+  @Portal()
+  @Get('portal/coins')
+  coins() {
+    return this.portal.coins();
+  }
+
+  @Portal()
+  @Get('portal/quiz')
+  quiz() {
+    return this.portal.quiz();
+  }
+
+  @Portal()
+  @Post('portal/quiz/:id/answer')
+  @HttpCode(200)
+  answerQuiz(@Param('id', ParseUUIDPipe) id: string, @Body() dto: QuizAnswerDto) {
+    return this.portal.answerQuiz(id, dto.choice);
   }
 
   @Portal()

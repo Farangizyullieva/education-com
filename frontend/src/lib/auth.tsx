@@ -13,6 +13,8 @@ export interface Me {
   role_names: string[];
   permissions: Record<string, 'own' | 'branch' | 'all'>;
   allowed_branch_ids: string[];
+  /** Faqat filialga biriktirilmagan direktor barcha filiallarni ko'radi */
+  all_branches: boolean;
 }
 
 interface AuthState {

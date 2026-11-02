@@ -10,8 +10,8 @@ export type Panel = 'staff' | 'teacher' | 'portal';
 
 export const PANELS: Record<Panel, { home: string; login: string; name: string }> = {
   staff: { home: '/dashboard', login: '/login', name: 'Admin paneli' },
-  teacher: { home: '/teacher', login: '/teacher/login', name: "O'qituvchi paneli" },
-  portal: { home: '/student', login: '/student/login', name: "O'quvchi kabineti" },
+  teacher: { home: '/teacher', login: '/login', name: "O'qituvchi paneli" },
+  portal: { home: '/student', login: '/login', name: "O'quvchi kabineti" },
 };
 export const STUDENT_HOME = PANELS.portal.home;
 export const STUDENT_LOGIN = PANELS.portal.login;

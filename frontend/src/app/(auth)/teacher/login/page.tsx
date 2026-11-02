@@ -1,6 +1,6 @@
-import { StaffLogin } from '@/components/staff-login';
+import { redirect } from 'next/navigation';
 
-// O'qituvchi paneli kirish sahifasi
-export default function TeacherLoginPage() {
-  return <StaffLogin panel="teacher" />;
+// Eski O'qituvchi kirish manzili: endi hamma yagona /login sahifasidan kiradi
+export default function LegacyLoginRedirect(): never {
+  redirect('/login');
 }

@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { AlertTriangle, CalendarDays, ClipboardCheck, Clock, DoorOpen, GraduationCap, Users, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CalendarDays, ClipboardCheck, ClipboardList, Clock, DoorOpen, GraduationCap, Users, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { LessonDialog } from '@/components/academic';
@@ -11,6 +11,7 @@ import { addDays, lessonTime, subjectColor, todayIso, unitLabel, WEEKDAYS_SHORT,
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { formatDate, formatLongDate } from '@/lib/format';
+import type { ToReview } from '@/lib/lms';
 import { t } from '@/lib/i18n';
 
 function Stat({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: number; tone: string }) {
@@ -24,6 +25,43 @@ function Stat({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: str
         <CountUp value={value} />
       </p>
     </div>
+  );
+}
+
+// Baholanmagan javoblar: o'qituvchi birinchi navbatda nimani tekshirishi kerakligini ko'radi (server faqat o'z guruhlarini qaytaradi)
+function ToReviewPanel() {
+  const q = useQuery({ queryKey: ['assignments', 'to-review'], queryFn: () => api<ToReview>('/assignments/to-review') });
+  return (
+    <Panel className="mt-4 overflow-hidden">
+      <h2 className="flex items-center justify-between border-b border-line px-5 py-3.5 font-semibold">
+        {t('Tekshirilishi kerak javoblar')}
+        {q.data && q.data.total > 0 && <StatusPill tone="warning">{q.data.total}</StatusPill>}
+      </h2>
+      {q.isError ? (
+        <ErrorNote onRetry={() => void q.refetch()}>{q.error.message}</ErrorNote>
+      ) : q.isPending ? (
+        <div className="m-5 h-20 animate-pulse rounded-lg bg-canvas" role="status" />
+      ) : q.data.items.length === 0 ? (
+        <EmptyState icon={ClipboardList} title="Tekshiriladigan javob yo'q" hint="O'quvchilar vazifa topshirganda shu yerda ko'rinadi." />
+      ) : (
+        <ul className="divide-y divide-line">
+          {q.data.items.map((i) => (
+            <li key={i.assignment_id}>
+              <Link href={`/teacher/groups/${i.study_unit.id}`} className="flex items-center gap-3 px-5 py-3 hover:bg-canvas">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{i.title}</p>
+                  <p className="truncate text-xs text-muted">
+                    {i.study_unit.name}
+                    {i.due_date ? ` · ${t('Muddat: {date}', { date: formatDate(i.due_date) })}` : ''}
+                  </p>
+                </div>
+                <StatusPill tone="warning">{t('{n} ta javob', { n: i.pending })}</StatusPill>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   );
 }
 
@@ -60,6 +98,8 @@ export function TeacherHome() {
             <Stat icon={GraduationCap} label="O'quvchilarim" value={groups.reduce((sum, g) => sum + g.students_count, 0)} tone="bg-info-soft text-info" />
             <Stat icon={AlertTriangle} label="Davomat qo'yilmagan" value={unmarked.length} tone={unmarked.length ? 'bg-danger-soft text-danger' : 'bg-canvas text-muted'} />
           </div>
+
+          {can('homework.manage') && <ToReviewPanel />}
 
           <div className="mt-4 grid items-start gap-4 lg:grid-cols-5">
             <Panel className="overflow-hidden lg:col-span-3">

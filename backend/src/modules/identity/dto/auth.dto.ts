@@ -24,3 +24,9 @@ export class TotpCodeDto {
 export class TotpDisableDto extends TotpCodeDto {
   @IsString() @MinLength(1) @MaxLength(200) password!: string;
 }
+
+export class ChangePasswordDto {
+  @IsString() @MinLength(1) @MaxLength(200) current_password!: string;
+  /** Xodim parol siyosati bilan bir xil (employees.dto): kamida 10 belgi */
+  @IsString() @MinLength(10) @MaxLength(200) new_password!: string;
+}

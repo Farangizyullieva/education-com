@@ -12,7 +12,8 @@
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:demo": "tsx prisma/demo.ts",
-    "db:demo:clear": "tsx prisma/demo.ts clear"
+    "db:demo:clear": "tsx prisma/demo.ts clear",
+    "db:check-logins": "tsx prisma/check-logins.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.7",

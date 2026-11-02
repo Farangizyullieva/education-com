@@ -9,8 +9,10 @@ export interface AuthContext {
   roleNames: string[];
   /** Har bir ruxsat uchun rollar bo'yicha eng keng scope */
   permissions: Partial<Record<PermissionCode, Scope>>;
-  /** Bo'sh = barcha filiallar (TZ 3.3) */
+  /** Foydalanuvchiga biriktirilgan filiallar. Bo'sh ro'yxat HECH QANDAY filial emas (faqat `allBranches` bo'lsa hammasi) */
   allowedBranchIds: string[];
+  /** Faqat filialga biriktirilmagan direktor (owner) barcha filiallarni ko'radi; boshqa har bir rol faqat o'z filiallarida ishlaydi */
+  allBranches: boolean;
 }
 
 export interface RequestContext {

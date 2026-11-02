@@ -61,6 +61,7 @@ describe('foundation (e2e)', () => {
         phone: nextPhone(),
         password: PASSWORD,
         role_ids: [t1.roles.teacher],
+        branch_ids: [t1.branches.a],
       });
       const phone = created.body.data.phone as string;
       for (let i = 0; i < 5; i++) expect((await login(app, t1, phone, 'wrong-password')).status).toBe(401);
@@ -208,6 +209,7 @@ describe('foundation (e2e)', () => {
         phone,
         password: PASSWORD,
         role_ids: [t1.roles.administrator],
+        branch_ids: [t1.branches.a],
       });
       const tokens = (await login(app, t1, phone)).body.data as Tokens;
       expect((await api(app, tokens.access_token).get('/branches')).status).toBe(200);

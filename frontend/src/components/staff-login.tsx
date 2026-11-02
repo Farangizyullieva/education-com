@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { Button, ErrorNote, Field, IconButton } from '@/components/ui';
-import { PANELS, panelOf, type Panel } from '@/components/portal-gate';
+import { PANELS, panelOf } from '@/components/portal-gate';
 import { api, setAccessToken } from '@/lib/api';
 import type { Me } from '@/lib/auth';
 import { t } from '@/lib/i18n';
@@ -16,20 +16,21 @@ const POINTS = [
   { icon: Wallet, text: "To'lov va qarzdorlik avtomatik hisoblanadi" },
 ];
 
-/** Admin paneli va o'qituvchi paneli kirish sahifasi. Boshqa panel akkaunti bu yerdan kirmaydi — o'z sahifasiga yo'naltiriladi */
-export function StaffLogin({ panel }: { panel: Exclude<Panel, 'portal'> }) {
+/**
+ * Yagona kirish sahifasi: direktor, administrator, buxgalter, o'qituvchi va o'quvchi — hammasi shu yerdan kiradi.
+ * Kirgandan keyin akkaunt turiga qarab o'z paneliga olib boriladi (admin paneli, o'qituvchi paneli yoki o'quvchi kabineti).
+ */
+export function StaffLogin() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [wrongPanel, setWrongPanel] = useState<Panel | null>(null);
   // 2FA yoqilgan akkauntda parol to'g'ri bo'lgach ikkinchi qadam — bir martalik kod
   const [credentials, setCredentials] = useState<{ login: string; password: string } | null>(null);
 
   async function submit(payload: { login: string; password: string; totp_code?: string }) {
     setPending(true);
     setError(null);
-    setWrongPanel(null);
     try {
       const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const body = (await res.json()) as { access_token?: string; error?: { code?: string; message?: string } };
@@ -43,13 +44,7 @@ export function StaffLogin({ panel }: { panel: Exclude<Panel, 'portal'> }) {
       }
       setAccessToken(body.access_token);
       const actual = panelOf(await api<Me>('/auth/me'));
-      if (actual !== panel) {
-        await fetch('/api/auth/logout', { method: 'POST' });
-        setAccessToken(null);
-        setWrongPanel(actual);
-        return;
-      }
-      router.replace(PANELS[panel].home);
+      router.replace(PANELS[actual].home);
     } catch {
       setError(t("Server bilan bog'lanib bo'lmadi. Internetni tekshirib, qayta urinib ko'ring"));
     } finally {
@@ -130,11 +125,10 @@ export function StaffLogin({ panel }: { panel: Exclude<Panel, 'portal'> }) {
           ) : (
             <>
               <div>
-                <p className="mb-2 inline-flex rounded-full bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand-strong">{t(PANELS[panel].name)}</p>
                 <h1 className="text-2xl font-semibold tracking-tight">{t('Xush kelibsiz')}</h1>
-                <p className="mt-1.5 text-sm text-muted">{t('Davom etish uchun hisobingizga kiring')}</p>
+                <p className="mt-1.5 text-sm text-muted">{t('Davom etish uchun hisobingizga kiring. Admin, o\'qituvchi va o\'quvchilar — hammasi shu yerdan kiradi.')}</p>
               </div>
-              <Field label="Telefon yoki email" name="login" autoComplete="username" inputMode="email" placeholder="+998 90 123-45-67" required autoFocus />
+              <Field label="Telefon yoki email" name="login" autoComplete="username" inputMode="email" placeholder="+998 90 123-45-67" hint="O'quvchilar telefon raqami bilan kiradi" required autoFocus />
               <Field
                 label="Parol"
                 name="password"
@@ -146,27 +140,10 @@ export function StaffLogin({ panel }: { panel: Exclude<Panel, 'portal'> }) {
                 }
               />
               {error && <ErrorNote>{error}</ErrorNote>}
-              {wrongPanel && (
-                <ErrorNote>
-                  {t('Bu sahifa — {panel}. Sizning akkauntingiz boshqa panelga tegishli:', { panel: t(PANELS[panel].name) })}{' '}
-                  <Link href={PANELS[wrongPanel].login} className="font-semibold underline">
-                    {t('{panel} — kirish', { panel: t(PANELS[wrongPanel].name) })}
-                  </Link>
-                </ErrorNote>
-              )}
               <Button type="submit" size="lg" className="w-full" loading={pending}>
                 Kirish
               </Button>
               <p className="text-center text-xs text-muted">{t('Parolni unutdingizmi? Tashkilot administratoriga murojaat qiling.')}</p>
-              <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-line pt-4 text-sm">
-                {(['staff', 'teacher', 'portal'] as const)
-                  .filter((p) => p !== panel)
-                  .map((p) => (
-                    <Link key={p} href={PANELS[p].login} className="font-medium text-brand-strong hover:underline">
-                      {t('{panel} — kirish', { panel: t(PANELS[p].name) })}
-                    </Link>
-                  ))}
-              </div>
             </>
           )}
         </form>

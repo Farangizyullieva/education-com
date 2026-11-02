@@ -1,6 +1,6 @@
 import { StaffLogin } from '@/components/staff-login';
 
-// Admin paneli kirish sahifasi (direktor, administrator, buxgalter…)
+// Yagona kirish sahifasi: hamma rol shu yerdan kiradi, keyin o'z paneliga yo'naltiriladi
 export default function LoginPage() {
-  return <StaffLogin panel="staff" />;
+  return <StaffLogin />;
 }

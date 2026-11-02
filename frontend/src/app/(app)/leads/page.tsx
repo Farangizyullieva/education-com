@@ -2,23 +2,43 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { GraduationCap, Phone, Plus, Target, Trash2 } from 'lucide-react';
+import { CalendarClock, GraduationCap, MessageSquare, Phone, PhoneCall, Plus, StickyNote, Store, Target, Trash2, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useToast } from '@/components/toast';
-import { Avatar, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, Modal, PageHeader, Panel, SearchInput, Segmented, Select, SelectField, TextareaField, td, th } from '@/components/ui';
+import { Avatar, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, Modal, PageHeader, Panel, SearchInput, Segmented, Select, SelectField, StatusPill, TextareaField, td, th } from '@/components/ui';
 import type { Ref } from '@/lib/academic';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { formatDateTime, formatPhone } from '@/lib/format';
 import { t } from '@/lib/i18n';
-import { ago, stageOf, STAGES, type Lead, type LeadEvent, type LeadStage } from '@/lib/leads';
+import { ACTIVITY_KINDS, ageOf, ago, followUpState, GUARDIAN_RELATIONS, isoToLocal, localToIso, PREFERRED_TIMES, stageOf, STAGES, TEMPERATURES, type ActivityKind, type Lead, type LeadEvent, type LeadStage, type Temperature } from '@/lib/leads';
 
 const agoText = (iso: string): string => {
   const a = ago(iso);
   return t(a.text, a.vars);
 };
+
+const KIND_ICON: Record<ActivityKind, LucideIcon> = { note: StickyNote, call: PhoneCall, message: MessageSquare, visit: Store };
+
+function TemperaturePill({ value }: { value: Temperature }) {
+  const tp = TEMPERATURES.find((x) => x.id === value) ?? TEMPERATURES[1]!;
+  return <StatusPill tone={tp.tone}>{t(tp.label)}</StatusPill>;
+}
+
+/** Keyingi bog'lanish eslatmasi: muddati o'tgan — qizil, bugun — sariq; rang bilan birga matn ham bor */
+function FollowUp({ lead, compact }: { lead: Lead; compact?: boolean }) {
+  const state = followUpState(lead);
+  if (!state || !lead.next_contact_at) return compact ? <span className="text-muted">—</span> : null;
+  const text = state === 'overdue' ? t("Bog'lanish muddati o'tgan") : state === 'today' ? t('Bugun bog\'lanish kerak') : t("Keyingi bog'lanish");
+  return (
+    <span className={clsx('inline-flex items-center gap-1 text-xs font-medium', state === 'overdue' ? 'text-danger' : state === 'today' ? 'text-warning' : 'text-muted')}>
+      <CalendarClock className="size-3.5 shrink-0" aria-hidden />
+      {compact ? formatDateTime(lead.next_contact_at) : `${text}: ${formatDateTime(lead.next_contact_at)}`}
+    </span>
+  );
+}
 
 function useLeadMutations(onDone?: () => void) {
   const queryClient = useQueryClient();
@@ -42,6 +62,8 @@ export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
   const [branchId, setBranchId] = useState('');
+  const [followUp, setFollowUp] = useState<'' | 'today' | 'overdue'>('');
+  const [temperature, setTemperature] = useState<'' | Temperature>('');
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -59,7 +81,9 @@ export default function LeadsPage() {
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   if (branchId) params.set('branch_id', branchId);
-  const leads = useQuery({ queryKey: ['leads', 'list', q, branchId], queryFn: () => api<Lead[]>(`/leads?${params.toString()}`) });
+  if (followUp) params.set('follow_up', followUp);
+  if (temperature) params.set('temperature', temperature);
+  const leads = useQuery({ queryKey: ['leads', 'list', q, branchId, followUp, temperature], queryFn: () => api<Lead[]>(`/leads?${params.toString()}`) });
   const all = leads.data ?? [];
   const canEdit = can('lead.update');
 
@@ -93,6 +117,15 @@ export default function LeadsPage() {
             ))}
           </Select>
         )}
+        <Segmented label="Eslatma" value={followUp} onChange={setFollowUp} options={[{ id: '', label: 'Barchasi' }, { id: 'today', label: 'Bugun bog\'lanish' }, { id: 'overdue', label: "Muddati o'tgan" }]} />
+        <Select aria-label={t('Harorat')} value={temperature} onChange={(e) => setTemperature(e.target.value as '' | Temperature)}>
+          <option value="">{t('Barcha harorat')}</option>
+          {TEMPERATURES.map((x) => (
+            <option key={x.id} value={x.id}>
+              {t(x.label)}
+            </option>
+          ))}
+        </Select>
         {all.length > 0 && (
           <p className="ml-auto text-sm text-muted">
             {t('Jami {n} ta lid', { n: all.length })}
@@ -107,7 +140,7 @@ export default function LeadsPage() {
         <div className="h-72 animate-pulse rounded-xl bg-surface" role="status" />
       ) : all.length === 0 ? (
         <Panel>
-          {q || branchId ? (
+          {q || branchId || followUp || temperature ? (
             <EmptyState icon={Target} title="Hech narsa topilmadi" hint="Qidiruv so'zini yoki filtrlarni o'zgartirib ko'ring." />
           ) : (
             <EmptyState icon={Target} title="Hali lid yo'q" hint="Qo'ng'iroq qilgan yoki kelib so'ragan har bir qiziquvchini shu yerga yozing — hech kim unutilmaydi." action={addButton} />
@@ -159,7 +192,10 @@ export default function LeadsPage() {
                           onClick={() => setOpenId(l.id)}
                           className={clsx('block w-full rounded-lg border border-line bg-surface p-3 text-left shadow-card transition-colors hover:border-brand/50', dragging === l.id && 'opacity-40')}
                         >
-                          <p className="text-sm font-medium leading-snug">{l.full_name}</p>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-sm font-medium leading-snug">{l.full_name}</p>
+                            <TemperaturePill value={l.temperature} />
+                          </div>
                           {l.phone && (
                             <p className="mt-1 flex items-center gap-1.5 text-xs tabular-nums text-muted">
                               <Phone className="size-3" aria-hidden /> {formatPhone(l.phone)}
@@ -169,6 +205,11 @@ export default function LeadsPage() {
                             <p className="mt-2 truncate text-xs">
                               {l.stage === 'lost' && l.lost_reason ? <span className="text-danger">{l.lost_reason}</span> : l.discipline?.name}
                               {l.stage !== 'lost' && l.level && <span className="text-muted"> · {l.level.name}</span>}
+                            </p>
+                          )}
+                          {followUpState(l) && (
+                            <p className="mt-2">
+                              <FollowUp lead={l} />
                             </p>
                           )}
                           <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-line pt-2.5 text-xs text-muted">
@@ -190,7 +231,7 @@ export default function LeadsPage() {
           <table className="w-full">
             <thead className="border-b border-line bg-canvas/50">
               <tr>
-                {['Lid', 'Telefon', 'Fan / daraja', 'Bosqich', 'Manba', 'Filial', "Mas'ul", 'Oxirgi faoliyat'].map((h) => (
+                {['Lid', 'Telefon', 'Fan / daraja', 'Bosqich', 'Harorat', "Keyingi bog'lanish", 'Manba', 'Filial', "Mas'ul", 'Oxirgi faoliyat'].map((h) => (
                   <th key={h} className={th}>
                     {t(h)}
                   </th>
@@ -215,6 +256,12 @@ export default function LeadsPage() {
                       <span className="size-2.5 rounded-full" style={{ background: stageOf(l.stage).color }} aria-hidden /> {t(stageOf(l.stage).label)}
                     </span>
                   </td>
+                  <td className={td}>
+                    <TemperaturePill value={l.temperature} />
+                  </td>
+                  <td className={`${td} whitespace-nowrap`}>
+                    <FollowUp lead={l} compact />
+                  </td>
                   <td className={`${td} text-muted`}>{l.ad_source?.name ?? '—'}</td>
                   <td className={`${td} text-muted`}>{l.branch.name}</td>
                   <td className={`${td} text-muted`}>{l.owner?.full_name ?? '—'}</td>
@@ -234,11 +281,22 @@ export default function LeadsPage() {
   );
 }
 
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <fieldset className="space-y-3.5 rounded-xl border border-line p-4">
+      <legend className="px-1.5 text-xs font-semibold uppercase tracking-wide text-muted">{t(title)}</legend>
+      {children}
+    </fieldset>
+  );
+}
+
+// Yangi lid anketasi: kim, kimning nomidan murojaat qilmoqda, nimaga qiziqadi, qachon qayta bog'lanish
 function LeadForm({ onClose }: { onClose: () => void }) {
   const { can } = useAuth();
   const { refresh, toast } = useLeadMutations();
   const branches = useQuery({ queryKey: ['branches'], queryFn: () => api<Ref[]>('/branches'), enabled: can('branch.view') });
   const disciplines = useQuery({ queryKey: ['dictionaries', 'discipline'], queryFn: () => api<Ref[]>('/dictionaries?kind=discipline') });
+  const levels = useQuery({ queryKey: ['dictionaries', 'level'], queryFn: () => api<Ref[]>('/dictionaries?kind=level') });
   const sources = useQuery({ queryKey: ['dictionaries', 'ad_source'], queryFn: () => api<Ref[]>('/dictionaries?kind=ad_source') });
   const create = useMutation({
     mutationFn: (body: Record<string, unknown>) => api<Lead>('/leads', { method: 'POST', body }),
@@ -250,43 +308,99 @@ function LeadForm({ onClose }: { onClose: () => void }) {
   });
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    create.mutate(Object.fromEntries(new FormData(e.currentTarget)));
+    const data = new FormData(e.currentTarget);
+    const body: Record<string, unknown> = Object.fromEntries(data);
+    body.next_contact_at = localToIso(data.get('next_contact_at'));
+    body.trial_at = localToIso(data.get('trial_at'));
+    create.mutate(body);
   };
   const fieldError = (field: string): string | undefined => (create.error && 'details' in create.error ? (create.error.details as { field?: string; message: string }[] | undefined)?.find((d) => d.field === field)?.message : undefined);
+  const known = ['full_name', 'phone', 'birth_date', 'guardian_phone', 'next_contact_at', 'trial_at'];
+  const options = (list?: Ref[]) =>
+    list?.map((d) => (
+      <option key={d.id} value={d.id}>
+        {d.name}
+      </option>
+    ));
 
   return (
-    <Modal title="Yangi lid" description="Qiziqish bildirgan odam. Keyin bir tugma bilan o'quvchiga aylantirasiz" onClose={onClose}>
+    <Modal title="Yangi lid" description="Qiziqish bildirgan odam. Keyin bir tugma bilan o'quvchiga aylantirasiz" onClose={onClose} wide>
       <form onSubmit={onSubmit} className="space-y-4">
-        <Field label="F.I.O." name="full_name" required minLength={2} autoFocus error={fieldError('full_name')} />
-        <Field label="Telefon" name="phone" type="tel" placeholder="+998 90 123 45 67" error={fieldError('phone')} />
-        <SelectField label="Filial" name="branch_id" required defaultValue={branches.data?.length === 1 ? branches.data[0]?.id : ''} key={branches.data?.length ?? 0}>
-          <option value="">{t('Tanlang…')}</option>
-          {branches.data?.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </SelectField>
-        <div className="grid grid-cols-2 gap-4">
-          <SelectField label="Qiziqqan fani" name="discipline_id" defaultValue="">
-            <option value="">—</option>
-            {disciplines.data?.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </SelectField>
-          <SelectField label="Qayerdan bildi" name="ad_source_id" defaultValue="">
-            <option value="">—</option>
-            {sources.data?.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </SelectField>
-        </div>
-        <TextareaField label="Izoh" name="note" maxLength={2000} placeholder="Masalan: kechki guruh kerak, narxni so'radi" />
-        {create.isError && !fieldError('full_name') && !fieldError('phone') && <ErrorNote>{create.error.message}</ErrorNote>}
+        <Section title="Lid haqida">
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <Field label="F.I.O." name="full_name" required minLength={2} autoFocus error={fieldError('full_name')} />
+            <Field label="Telefon" name="phone" type="tel" placeholder="+998 90 123 45 67" error={fieldError('phone')} />
+            <Field label="Tug'ilgan sana" name="birth_date" type="date" max={new Date().toISOString().slice(0, 10)} error={fieldError('birth_date')} />
+            <SelectField label="Jinsi" name="gender" defaultValue="">
+              <option value="">—</option>
+              <option value="male">{t("O'g'il bola / erkak")}</option>
+              <option value="female">{t('Qiz bola / ayol')}</option>
+            </SelectField>
+            <Field label="Maktab / ish joyi" name="school" maxLength={150} />
+            <SelectField label="Filial" name="branch_id" required defaultValue={branches.data?.length === 1 ? branches.data[0]?.id : ''} key={branches.data?.length ?? 0}>
+              <option value="">{t('Tanlang…')}</option>
+              {options(branches.data)}
+            </SelectField>
+          </div>
+        </Section>
+
+        <Section title="Ota-ona / vakil">
+          <p className="-mt-1 text-xs text-muted">{t("Bola uchun murojaat qilingan bo'lsa to'ldiring. O'quvchiga aylantirilganda kartochkaga o'tadi.")}</p>
+          <div className="grid gap-3.5 sm:grid-cols-3">
+            <Field label="Ism" name="guardian_name" maxLength={150} />
+            <SelectField label="Kim bo'ladi" name="guardian_relation" defaultValue="">
+              <option value="">—</option>
+              {GUARDIAN_RELATIONS.map((r) => (
+                <option key={r} value={r}>
+                  {t(r)}
+                </option>
+              ))}
+            </SelectField>
+            <Field label="Telefon" name="guardian_phone" type="tel" placeholder="+998 90 123 45 67" error={fieldError('guardian_phone')} />
+          </div>
+        </Section>
+
+        <Section title="Qiziqish">
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <SelectField label="Qiziqqan fani" name="discipline_id" defaultValue="">
+              <option value="">—</option>
+              {options(disciplines.data)}
+            </SelectField>
+            <SelectField label="Daraja" name="level_id" defaultValue="">
+              <option value="">—</option>
+              {options(levels.data)}
+            </SelectField>
+            <SelectField label="Qulay vaqt" name="preferred_time" defaultValue="">
+              <option value="">—</option>
+              {PREFERRED_TIMES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {t(p.label)}
+                </option>
+              ))}
+            </SelectField>
+            <SelectField label="Qayerdan bildi" name="ad_source_id" defaultValue="">
+              <option value="">—</option>
+              {options(sources.data)}
+            </SelectField>
+          </div>
+        </Section>
+
+        <Section title="Keyingi qadam">
+          <div className="grid gap-3.5 sm:grid-cols-3">
+            <SelectField label="Harorat" name="temperature" defaultValue="warm">
+              {TEMPERATURES.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {t(x.label)}
+                </option>
+              ))}
+            </SelectField>
+            <Field label="Qachon bog'lanamiz" name="next_contact_at" type="datetime-local" error={fieldError('next_contact_at')} />
+            <Field label="Sinov darsi" name="trial_at" type="datetime-local" error={fieldError('trial_at')} />
+          </div>
+          <TextareaField label="Izoh" name="note" maxLength={2000} placeholder="Masalan: kechki guruh kerak, narxni so'radi" />
+        </Section>
+
+        {create.isError && !known.some((k) => fieldError(k)) && <ErrorNote>{create.error.message}</ErrorNote>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Bekor qilish
@@ -305,12 +419,15 @@ function LeadDrawer({ id, onClose, onLose, onConvert }: { id: string; onClose: (
   const queryClient = useQueryClient();
   const { update, refresh, toast } = useLeadMutations();
   const [note, setNote] = useState('');
+  const [kind, setKind] = useState<ActivityKind>('note');
+  const [followAt, setFollowAt] = useState('');
   const [removing, setRemoving] = useState(false);
   const lead = useQuery({ queryKey: ['leads', 'detail', id], queryFn: () => api<Lead & { events: LeadEvent[] }>(`/leads/${id}`) });
   const addNote = useMutation({
-    mutationFn: () => api<unknown>(`/leads/${id}/notes`, { method: 'POST', body: { text: note.trim() } }),
+    mutationFn: () => api<unknown>(`/leads/${id}/notes`, { method: 'POST', body: { text: note.trim(), kind, ...(followAt ? { next_contact_at: localToIso(followAt) } : {}) } }),
     onSuccess: async () => {
       setNote('');
+      setFollowAt('');
       await queryClient.invalidateQueries({ queryKey: ['leads'] });
     },
     onError: (e) => toast.error(e.message),
@@ -327,7 +444,7 @@ function LeadDrawer({ id, onClose, onLose, onConvert }: { id: string; onClose: (
   const l = lead.data;
   const canEdit = can('lead.update') && l?.stage !== 'enrolled';
   const eventText = (e: LeadEvent): string =>
-    e.type === 'created' ? t('Lid yaratildi') : e.type === 'converted' ? t("O'quvchiga aylantirildi") : e.type === 'note' ? (e.text ?? '') : `${t(stageOf(e.from_stage ?? 'new').label)} → ${t(stageOf(e.to_stage ?? 'new').label)}${e.text ? ` — ${e.text}` : ''}`;
+    e.type === 'created' ? t('Lid yaratildi') : e.type === 'converted' ? t("O'quvchiga aylantirildi") : ['note', 'call', 'message', 'visit'].includes(e.type) ? (e.text ?? '') : `${t(stageOf(e.from_stage ?? 'new').label)} → ${t(stageOf(e.to_stage ?? 'new').label)}${e.text ? ` — ${e.text}` : ''}`;
 
   return (
     <Drawer
@@ -385,11 +502,64 @@ function LeadDrawer({ id, onClose, onLose, onConvert }: { id: string; onClose: (
               {l.stage === 'lost' && l.lost_reason && <p className="mt-2 text-sm text-danger">{t('Sabab: {reason}', { reason: l.lost_reason })}</p>}
             </div>
 
+            <div>
+              <p className="mb-2 text-xs font-medium text-muted">{t('Harorat')}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {TEMPERATURES.map((x) => (
+                  <button
+                    key={x.id}
+                    type="button"
+                    disabled={!canEdit || update.isPending}
+                    aria-pressed={l.temperature === x.id}
+                    onClick={() => l.temperature !== x.id && update.mutate({ id, temperature: x.id })}
+                    className={clsx('h-8 rounded-full border px-3 text-[13px] font-medium transition-colors disabled:cursor-default', l.temperature === x.id ? 'border-brand bg-brand-soft text-brand-strong' : 'border-line text-ink/80 enabled:hover:bg-canvas')}
+                  >
+                    {t(x.label)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {l.stage !== 'enrolled' && l.stage !== 'lost' && (
+              <div className="rounded-xl border border-line p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">{t("Keyingi bog'lanish")}</p>
+                  <FollowUp lead={l} compact />
+                </div>
+                {canEdit && (
+                  <form
+                    className="mt-2.5 flex flex-wrap items-end gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const data = new FormData(e.currentTarget);
+                      update.mutate({ id, next_contact_at: localToIso(data.get('next_contact_at')), trial_at: localToIso(data.get('trial_at')) });
+                    }}
+                  >
+                    <div className="min-w-44 flex-1">
+                      <Field label="Qachon bog'lanamiz" name="next_contact_at" type="datetime-local" defaultValue={isoToLocal(l.next_contact_at)} key={`n${l.next_contact_at ?? ''}`} />
+                    </div>
+                    <div className="min-w-44 flex-1">
+                      <Field label="Sinov darsi" name="trial_at" type="datetime-local" defaultValue={isoToLocal(l.trial_at)} key={`t${l.trial_at ?? ''}`} />
+                    </div>
+                    <Button type="submit" variant="secondary" loading={update.isPending}>
+                      Saqlash
+                    </Button>
+                  </form>
+                )}
+              </div>
+            )}
+
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               {(
                 [
                   ['Telefon', l.phone ? formatPhone(l.phone) : '—'],
                   ['Qiziqqan fani', [l.discipline?.name, l.level?.name].filter(Boolean).join(' · ') || '—'],
+                  ['Yoshi', ageOf(l.birth_date) === null ? '—' : t('{n} yosh', { n: ageOf(l.birth_date) as number })],
+                  ['Maktab / ish joyi', l.school ?? '—'],
+                  ['Ota-ona / vakil', [l.guardian_name, l.guardian_relation && `(${t(l.guardian_relation)})`].filter(Boolean).join(' ') || '—'],
+                  ['Vakil telefoni', l.guardian_phone ? formatPhone(l.guardian_phone) : '—'],
+                  ['Qulay vaqt', l.preferred_time ? t(PREFERRED_TIMES.find((p) => p.id === l.preferred_time)?.label ?? '') : '—'],
+                  ['Sinov darsi', l.trial_at ? formatDateTime(l.trial_at) : '—'],
                   ['Qayerdan bildi', l.ad_source?.name ?? '—'],
                   ['Yaratilgan', formatDateTime(l.created_at)],
                 ] as const
@@ -404,33 +574,50 @@ function LeadDrawer({ id, onClose, onLose, onConvert }: { id: string; onClose: (
 
             <div>
               <p className="mb-2 text-xs font-medium text-muted">{t('Tarix va izohlar')}</p>
-              {can('lead.update') && (
+              {can('lead.update') && l.stage !== 'enrolled' && (
                 <form
-                  className="mb-3 flex gap-2"
+                  className="mb-3 space-y-2"
                   onSubmit={(e) => {
                     e.preventDefault();
                     if (note.trim()) addNote.mutate();
                   }}
                 >
-                  <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000} placeholder={t("Izoh yozing: nima haqida gaplashdingiz?")} aria-label={t('Izoh')} className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 text-sm placeholder:text-muted/70 focus:border-brand focus:outline-none focus:ring-3 focus:ring-brand/15" />
-                  <Button type="submit" variant="secondary" loading={addNote.isPending} disabled={!note.trim()}>
-                    Qo'shish
-                  </Button>
+                  <Segmented label="Faoliyat turi" value={kind} onChange={setKind} options={ACTIVITY_KINDS} />
+                  <div className="flex gap-2">
+                    <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000} placeholder={t('Nima haqida gaplashdingiz? Natija qanday?')} aria-label={t('Izoh')} className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
+                    <Button type="submit" variant="secondary" loading={addNote.isPending} disabled={!note.trim()}>
+                      Qo&apos;shish
+                    </Button>
+                  </div>
+                  <Field label="Keyingi bog'lanish (ixtiyoriy)" type="datetime-local" value={followAt} onChange={(e) => setFollowAt(e.target.value)} />
                 </form>
               )}
               <ol className="space-y-3">
-                {l.events.map((e) => (
-                  <li key={e.id} className="flex gap-3 text-sm">
-                    <span className={clsx('mt-1.5 size-2 shrink-0 rounded-full', e.type === 'note' ? 'bg-brand' : e.type === 'converted' ? 'bg-success' : 'bg-line')} aria-hidden />
-                    <div className="min-w-0">
-                      <p className={clsx(e.type === 'note' && 'whitespace-pre-line')}>{eventText(e)}</p>
-                      <p className="mt-0.5 text-xs text-muted">
-                        {formatDateTime(e.created_at)}
-                        {e.actor && ` · ${e.actor}`}
-                      </p>
-                    </div>
-                  </li>
-                ))}
+                {l.events.map((e) => {
+                  const Icon = e.type in KIND_ICON ? KIND_ICON[e.type as ActivityKind] : null;
+                  const label = ACTIVITY_KINDS.find((k) => k.id === e.type)?.label;
+                  return (
+                    <li key={e.id} className="flex gap-3 text-sm">
+                      {Icon ? (
+                        <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-brand-soft text-brand" title={label ? t(label) : undefined}>
+                          <Icon className="size-3.5" aria-hidden />
+                        </span>
+                      ) : (
+                        <span className={clsx('mt-1.5 ml-2 size-2 shrink-0 rounded-full', e.type === 'converted' ? 'bg-success' : 'bg-line')} aria-hidden />
+                      )}
+                      <div className="min-w-0">
+                        <p className={clsx(Icon && 'whitespace-pre-line')}>
+                          {label && e.type !== 'note' && <span className="mr-1.5 text-xs font-semibold text-brand">{t(label)}</span>}
+                          {eventText(e)}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted">
+                          {formatDateTime(e.created_at)}
+                          {e.actor && ` · ${e.actor}`}
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
               </ol>
             </div>
           </div>

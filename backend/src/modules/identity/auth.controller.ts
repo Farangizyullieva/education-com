@@ -5,7 +5,7 @@ import type { AuthContext } from '../../common/context/request-context';
 import { PrismaService } from '../../common/db/prisma.service';
 import { FilesService } from '../../common/files/files.service';
 import { AuthService, TokenPair } from './auth.service';
-import { LoginDto, PasswordDto, RefreshDto, TotpCodeDto, TotpDisableDto } from './dto/auth.dto';
+import { ChangePasswordDto, LoginDto, PasswordDto, RefreshDto, TotpCodeDto, TotpDisableDto } from './dto/auth.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -37,6 +37,16 @@ export class AuthController {
   @HttpCode(204)
   logout(@Body() dto: RefreshDto): Promise<void> {
     return this.auth.logout(dto.refresh_token);
+  }
+
+  // Faqat xodimlar (@Authenticated portal foydalanuvchisini o'tkazmaydi; o'quvchi uchun `portal/password` bor).
+  // Joriy parolni taxmin qilishga yo'l qo'ymaslik uchun qattiq limit.
+  @Authenticated()
+  @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
+  @Post('password')
+  @HttpCode(204)
+  changePassword(@Body() dto: ChangePasswordDto): Promise<void> {
+    return this.auth.changePassword(dto.current_password, dto.new_password);
   }
 
   @Authenticated()
@@ -85,6 +95,7 @@ export class AuthController {
       role_names: user.roleNames,
       permissions: user.permissions,
       allowed_branch_ids: user.allowedBranchIds,
+      all_branches: user.allBranches,
     };
   }
 }

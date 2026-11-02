@@ -1,7 +1,7 @@
 'use client';
 
 import clsx from 'clsx';
-import { CalendarDays, ClipboardCheck, GraduationCap, House, LogOut, Moon, Sun, Users, type LucideIcon } from 'lucide-react';
+import { CalendarDays, ClipboardCheck, GraduationCap, House, LogOut, Moon, Sun, UserRound, Users, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
@@ -14,10 +14,12 @@ const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: '/teacher', label: 'Bosh sahifa', icon: House },
   { href: '/teacher/schedule', label: 'Jadval', icon: CalendarDays },
   { href: '/teacher/groups', label: 'Guruhlarim', icon: Users },
+  { href: '/teacher/students', label: "O'quvchilar", icon: GraduationCap },
   { href: '/teacher/attendance', label: 'Davomat', icon: ClipboardCheck },
+  { href: '/teacher/profile', label: 'Profil', icon: UserRound },
 ];
 
-// O'qituvchi paneli: admin panelidan alohida, faqat o'qituvchiga kerakli 4 bo'lim
+// O'qituvchi paneli: admin panelidan alohida, faqat o'qituvchiga kerakli bo'limlar
 export function TeacherShell({ children }: { children: ReactNode }) {
   const { me, logout } = useAuth();
   const { theme, toggle } = useTheme();
@@ -62,7 +64,7 @@ export function TeacherShell({ children }: { children: ReactNode }) {
         {/* Telefonda menyu pastda — bosh barmoq bilan oson */}
       </header>
       <main className="mx-auto max-w-7xl px-4 pb-24 pt-6 sm:px-6 md:pb-10">{children}</main>
-      <nav aria-label={t("O'qituvchi menyusi")} className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-line bg-surface md:hidden">
+      <nav aria-label={t("O'qituvchi menyusi")} className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-surface md:hidden">
         {NAV.map((item) => (
           <Link key={item.href} href={item.href} className={clsx('flex flex-col items-center gap-1 py-2 text-[11px] font-medium', active(item.href) ? 'text-success' : 'text-muted')}>
             <item.icon className="size-5" aria-hidden />

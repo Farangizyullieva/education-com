@@ -2,18 +2,18 @@
 
 import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { Building2, Check, ChevronDown, ChevronsLeft, ChevronsRight, Camera, GraduationCap, LogOut, Menu, MessagesSquare, Moon, Search, ShieldCheck, Sun, Zap } from 'lucide-react';
+import { Building2, Check, ChevronDown, ChevronsLeft, ChevronsRight, Camera, GraduationCap, LogOut, Menu, MessagesSquare, Moon, Search, ShieldAlert, ShieldCheck, Sun, Zap } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CommandPalette } from '@/components/command-palette';
 import { NotificationBell } from '@/components/notifications';
-import { Avatar, ConfirmDialog, IconButton } from '@/components/ui';
+import { Avatar, ConfirmDialog, EmptyState, IconButton } from '@/components/ui';
 import { api, apiUpload } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { t, useLang, type Lang } from '@/lib/i18n';
 import { useTheme } from '@/lib/theme';
-import { HOME, NAV, QUICK_ACTIONS, type NavPage, type NavSection } from '@/lib/nav';
+import { HOME, NAV, NAV_ITEMS, QUICK_ACTIONS, type NavPage, type NavSection } from '@/lib/nav';
 
 const COLLAPSED_KEY = 'educrm.sidebar.collapsed';
 const LANGS: { id: Lang; label: string }[] = [
@@ -95,6 +95,11 @@ export function Shell({ children }: { children: ReactNode }) {
       }
       return !prev;
     });
+
+  // Manzilni qo'lda ochish: menyuda yashirilgan bo'lim sahifasi ham ko'rsatilmaydi (UX; asosiy himoya backend'da)
+  const allPages: NavPage[] = NAV_ITEMS.flatMap((s) => [s, ...(s.pages ?? [])]);
+  const guarded = allPages.filter((p) => p.permissions?.length && p.href !== HOME && (pathname === p.href || pathname.startsWith(`${p.href}/`))).sort((a, b) => b.href.length - a.href.length)[0];
+  const routeAllowed = !guarded?.permissions || can(...guarded.permissions);
 
   const visible = (page: NavPage): boolean => !page.permissions?.length || can(...page.permissions);
   const groups = NAV.map((g) => ({ ...g, items: g.items.filter(visible) })).filter((g) => g.items.length > 0);
@@ -213,7 +218,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-semibold">{me.tenant_name}</span>
             <span className="block truncate text-xs text-white/60">
-              {me.allowed_branch_ids.length ? t('{n} ta filial', { n: me.allowed_branch_ids.length }) : t('Barcha filiallar')}
+              {me.all_branches ? t('Barcha filiallar') : t('{n} ta filial', { n: me.allowed_branch_ids.length })}
             </span>
           </span>
         </div>
@@ -369,7 +374,7 @@ export function Shell({ children }: { children: ReactNode }) {
       </header>
 
       <main className={clsx('px-4 pb-12 pt-[96px] transition-[margin] duration-200 sm:px-6 lg:px-8', collapsed ? 'lg:ml-[72px]' : 'lg:ml-[264px]')}>
-        <div className="mx-auto max-w-[1400px] animate-in">{children}</div>
+        <div className="mx-auto max-w-[1400px] animate-in">{routeAllowed ? children : <EmptyState icon={ShieldAlert} title="Bu bo'limga ruxsatingiz yo'q" hint="Kerak bo'lsa, rahbaringizdan ruxsat so'rang" />}</div>
       </main>
 
       <input

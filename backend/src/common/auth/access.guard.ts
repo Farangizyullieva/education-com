@@ -96,5 +96,6 @@ export async function loadAuthContext(db: PrismaService, tenantId: string, userI
     roleNames: user.roles.map((r) => r.role.name),
     permissions,
     allowedBranchIds: user.branches.map((b) => b.branchId),
+    allBranches: user.branches.length === 0 && user.roles.some((r) => r.role.code === 'owner'),
   };
 }

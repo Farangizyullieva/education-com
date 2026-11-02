@@ -361,6 +361,8 @@ model Student {
   attendances  Attendance[]
   ledger       LedgerEntry[]
   submissions  Submission[]
+  coinTransactions CoinTransaction[]
+  quizAnswers      QuizAnswer[]
 
   @@unique([tenantId, number])
   @@index([tenantId, branchId, status])
@@ -570,6 +572,7 @@ model StudyUnit {
   lessons     Lesson[]
   materials   Material[]
   assignments Assignment[]
+  quizQuestions QuizQuestion[]
 
   @@unique([tenantId, name])
   @@unique([tenantId, number])
@@ -642,6 +645,8 @@ model Lesson {
   teacher     User         @relation("LessonTeacher", fields: [teacherId], references: [id])
   classroom   Classroom?   @relation(fields: [classroomId], references: [id])
   attendances Attendance[]
+  assignments Assignment[]
+  materials   Material[]
 
   @@index([tenantId, studyUnitId, startAt])
   @@index([tenantId, teacherId, startAt])
@@ -768,6 +773,20 @@ model Lead {
   lostReason     String?   @map("lost_reason")
   /// Konversiyadan keyin yaratilgan o'quvchi (M2.5)
   studentId      String?   @map("student_id") @db.Uuid
+  gender           Gender?
+  birthDate        DateTime? @map("birth_date") @db.Date
+  /// Ota-ona / vakil (bolalar uchun asosiy aloqa)
+  guardianName     String?   @map("guardian_name")
+  guardianRelation String?   @map("guardian_relation")
+  guardianPhone    String?   @map("guardian_phone")
+  school           String?
+  /// morning | afternoon | evening | weekend
+  preferredTime    String?   @map("preferred_time")
+  /// hot | warm | cold
+  temperature      String    @default("warm")
+  /// Keyingi bog'lanish (eslatma) va sinov darsi vaqti
+  nextContactAt    DateTime? @map("next_contact_at") @db.Timestamptz
+  trialAt          DateTime? @map("trial_at") @db.Timestamptz
   lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
@@ -781,6 +800,7 @@ model Lead {
 
   @@index([tenantId, stage, createdAt(sort: Desc)])
   @@index([tenantId, ownerId, stage])
+  @@index([tenantId, nextContactAt])
   @@map("leads")
 }
 
@@ -816,13 +836,17 @@ model Material {
   description String?
   fileId      String?  @map("file_id") @db.Uuid
   link        String?
+  /// Ixtiyoriy: shu darsga bog'langan (masalan, dars videosi)
+  lessonId    String?  @map("lesson_id") @db.Uuid
   createdBy   String?  @map("created_by") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   studyUnit StudyUnit   @relation(fields: [studyUnitId], references: [id], onDelete: Cascade)
+  lesson    Lesson?     @relation(fields: [lessonId], references: [id], onDelete: SetNull)
   file      StoredFile? @relation(fields: [fileId], references: [id])
 
   @@index([studyUnitId, createdAt(sort: Desc)])
+  @@index([lessonId])
   @@map("materials")
 }
 
@@ -837,14 +861,18 @@ model Assignment {
   /// Topshirish muddati (shu kun oxirigacha)
   dueDate     DateTime? @map("due_date") @db.Date
   maxScore    Int       @default(100) @map("max_score")
+  /// Ixtiyoriy: shu dars uchun berilgan uy vazifasi
+  lessonId    String?   @map("lesson_id") @db.Uuid
   createdBy   String?   @map("created_by") @db.Uuid
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   studyUnit   StudyUnit    @relation(fields: [studyUnitId], references: [id], onDelete: Cascade)
+  lesson      Lesson?      @relation(fields: [lessonId], references: [id], onDelete: SetNull)
   file        StoredFile?  @relation(fields: [fileId], references: [id])
   submissions Submission[]
 
   @@index([studyUnitId, createdAt(sort: Desc)])
+  @@index([lessonId])
   @@map("assignments")
 }
 
@@ -869,4 +897,61 @@ model Submission {
   @@unique([assignmentId, studentId])
   @@index([studentId])
   @@map("submissions")
+}
+
+/// Gamifikatsiya: o'quvchining coinlari. Musbat = yutuq. (student, reason, ref) bo'yicha yagona — takroriy yozuv bo'lmaydi
+model CoinTransaction {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  studentId String   @map("student_id") @db.Uuid
+  amount    Int
+  /// homework_submit | homework_grade | quiz
+  reason    String
+  /// Vazifa yoki savol identifikatori
+  refId     String   @map("ref_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, reason, refId])
+  @@index([tenantId, studentId, createdAt(sort: Desc)])
+  @@map("coin_transactions")
+}
+
+/// Guruh bo'yicha test savoli (o'qituvchi yozadi, shu guruh o'quvchilari javob beradi)
+model QuizQuestion {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  studyUnitId  String   @map("study_unit_id") @db.Uuid
+  text         String
+  /// Javob variantlari (string[], 2–5 ta)
+  options      Json
+  correctIndex Int      @map("correct_index")
+  explanation  String?
+  coins        Int      @default(5)
+  createdBy    String?  @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  studyUnit StudyUnit    @relation(fields: [studyUnitId], references: [id], onDelete: Cascade)
+  answers   QuizAnswer[]
+
+  @@index([studyUnitId])
+  @@map("quiz_questions")
+}
+
+model QuizAnswer {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  questionId String   @map("question_id") @db.Uuid
+  studentId  String   @map("student_id") @db.Uuid
+  choice     Int
+  isCorrect  Boolean  @map("is_correct")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  question QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  student  Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, studentId])
+  @@index([studentId])
+  @@map("quiz_answers")
 }

@@ -49,10 +49,12 @@ describe('student portal (e2e)', () => {
     expect(me.balance).toBe(PRICE);
     expect(me.groups).toHaveLength(1);
     expect(me.groups[0]).toMatchObject({ name: 'Kabinet guruhi', teacher: 'Teacher', price_amount: PRICE });
-    expect(me.attendance).toMatchObject({ marked: 1, attended: 1, rate: 100 });
+    // Kabinet joriy oy davomatini ko'rsatadi: oyning 1-kuni "kecha" o'tgan oyga tushadi — test shu chegarada ham to'g'ri bo'lsin
+    const yesterdayMonth = iso(-1).slice(0, 7);
+    expect(me.attendance).toMatchObject(yesterdayMonth === iso(0).slice(0, 7) ? { marked: 1, attended: 1, rate: 100 } : { marked: 0, attended: 0, rate: null });
     expect(me.upcoming.length).toBeGreaterThan(0);
 
-    const lessons = (await api(app, st).get('/portal/lessons')).body.data.lessons as { date: string; mark: string | null }[];
+    const lessons = (await api(app, st).get(`/portal/lessons?month=${yesterdayMonth}`)).body.data.lessons as { date: string; mark: string | null }[];
     expect(lessons.find((l) => l.date === iso(-1))?.mark).toBe('present');
     const payments = (await api(app, st).get('/portal/payments')).body.data.entries as { type: string; amount: number }[];
     expect(payments.map((p) => [p.type, p.amount]).sort()).toEqual([['payment', PRICE * 2], ['subscription', -PRICE]].sort());

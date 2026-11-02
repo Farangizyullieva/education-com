@@ -43,7 +43,7 @@ export function StudentPortalDialog({ studentId, name, onClose }: { studentId: s
   const copy = async () => {
     if (!creds) return;
     try {
-      await navigator.clipboard.writeText(`${t('Sayt')}: ${window.location.origin}/student/login\n${t('Login')}: ${creds.login}\n${t('Parol')}: ${creds.password}`);
+      await navigator.clipboard.writeText(`${t('Sayt')}: ${window.location.origin}/login\n${t('Login')}: ${creds.login}\n${t('Parol')}: ${creds.password}`);
       toast.success('Nusxa olindi');
     } catch {
       toast.error("Nusxa olib bo'lmadi — qo'lda yozib oling");
@@ -82,7 +82,7 @@ export function StudentPortalDialog({ studentId, name, onClose }: { studentId: s
                 </dl>
                 <p className="mt-3 text-sm">
                   <span className="text-muted">{t('Kirish manzili')}: </span>
-                  <span className="font-medium">{typeof window === 'undefined' ? '' : window.location.host}/student/login</span>
+                  <span className="font-medium">{typeof window === 'undefined' ? '' : window.location.host}/login</span>
                 </p>
                 <p className="mt-3 text-xs leading-relaxed text-muted">{t("Parol faqat hozir ko'rsatiladi — o'quvchiga yozib bering yoki nusxasini yuboring. Unutilsa, shu yerda yangisini qo'yasiz.")}</p>
                 <Button variant="secondary" size="sm" onClick={() => void copy()} className="mt-3">

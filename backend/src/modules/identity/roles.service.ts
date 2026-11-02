@@ -36,6 +36,22 @@ export function assertCanGrant(auth: AuthContext, permissions: { code: string; s
   }
 }
 
+/**
+ * Boshqa xodimning akkauntini (parol, rol, aloqa, faollik) faqat uning BARCHA ruxsatlari o'zingizda bo'lsa o'zgartira olasiz.
+ * assertCanGrant faqat rol BERISHni tekshiradi; usiz filial boshqaruvchisi buxgalter (scope=all, payroll.pay) parolini
+ * almashtirib, uning ruxsatlari bilan kirib olardi. O'zingizning akkauntingiz bundan mustasno.
+ */
+export async function assertCanManageUser(tx: Tx, auth: AuthContext, targetUserId: string): Promise<void> {
+  if (targetUserId === auth.userId) return;
+  const roles = await tx.role.findMany({ where: { users: { some: { userId: targetUserId } } }, select: { permissions: true } });
+  const needed = roles.flatMap((r) => r.permissions.map((p) => ({ code: p.permissionCode, scope: p.scope })));
+  const uncovered = needed.find((p) => {
+    const held = auth.permissions[p.code as PermissionCode];
+    return !held || !scopeCovers(held, p.scope as 'own' | 'branch' | 'all');
+  });
+  if (uncovered) throw AppError.forbidden("Bu xodimning ruxsatlari sizning ruxsatlaringizdan yuqori — akkauntini o'zgartirib bo'lmaydi");
+}
+
 @Injectable()
 export class RolesService {
   constructor(

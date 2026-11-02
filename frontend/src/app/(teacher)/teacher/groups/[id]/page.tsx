@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ClipboardCheck, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { GroupLearning } from '@/components/lms-teacher';
 import { Avatar, BackButton, EmptyState, ErrorNote, Panel, StatusPill, TableSkeleton } from '@/components/ui';
 import { UNIT_STATUS, unitLabel, WEEKDAYS_SHORT, type Member, type StudyUnit } from '@/lib/academic';
 import { api } from '@/lib/api';
@@ -68,6 +69,7 @@ export default function TeacherGroupPage() {
               </ul>
             )}
           </Panel>
+          <GroupLearning unitId={g.id} />
         </>
       )}
     </>

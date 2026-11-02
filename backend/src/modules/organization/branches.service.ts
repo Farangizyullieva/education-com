@@ -57,7 +57,7 @@ export class BranchesService {
   create(dto: CreateBranchDto) {
     const auth = RequestContextStore.auth();
     // Filial bilan cheklangan foydalanuvchi yangi filialni baribir ko'ra olmaydi
-    if (auth.allowedBranchIds.length) throw AppError.forbidden();
+    if (!auth.allBranches) throw AppError.forbidden();
     return this.db.tx(async (tx) => {
       const branch = await tx.branch.create({
         data: {

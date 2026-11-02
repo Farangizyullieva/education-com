@@ -52,7 +52,21 @@ async function toError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, e?.code ?? 'ERROR', e?.message ?? 'Xatolik yuz berdi', e?.details, e?.request_id);
 }
 
+/**
+ * Preview rejimi (`/student-demo`): serverga ulanmasdan namunaviy ma'lumot ko'rsatish uchun. Faqat o'sha sahifa o'rnatadi.
+ * Handler `undefined` qaytarsa so'rov odatdagidek serverga ketadi; `null` — bo'sh (204) javob.
+ */
+type MockApi = (method: string, path: string, body: unknown) => unknown;
+let mockApi: MockApi | null = null;
+export const setMockApi = (fn: MockApi | null): void => {
+  mockApi = fn;
+};
+
 export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  if (mockApi) {
+    const mocked = mockApi(init.method ?? 'GET', path, init.body);
+    if (mocked !== undefined) return mocked as T;
+  }
   const send = (): Promise<Response> =>
     fetch(`${API_URL}${path}`, {
       method: init.method ?? 'GET',
@@ -95,4 +109,27 @@ export async function apiPage<T>(path: string): Promise<Paged<T>> {
   if (res.status === 401 && (await refreshAccessToken())) res = await send();
   if (!res.ok) throw await toError(res);
   return (await res.json()) as Paged<T>;
+}
+
+/**
+ * Multipart so'rov: matn maydonlari + ixtiyoriy fayl (vazifa, material, javob topshirish).
+ * Bo'sh/undefined maydonlar yuborilmaydi. Content-Type'ni brauzer o'zi qo'yadi (boundary bilan).
+ */
+export async function apiForm<T = void>(path: string, fields: Record<string, string | undefined>, file?: File | null, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+  if (mockApi) {
+    const mocked = mockApi(method, path, { ...fields, has_file: Boolean(file) });
+    if (mocked !== undefined) return mocked as T;
+  }
+  const send = (): Promise<Response> => {
+    const body = new FormData();
+    for (const [key, value] of Object.entries(fields)) if (value !== undefined && value !== '') body.append(key, value);
+    // Matn maydonlari fayldan oldin qo'shiladi: multer ularni to'liq o'qib bo'lgach faylni qabul qiladi
+    if (file) body.append('file', file);
+    return fetch(`${API_URL}${path}`, { method, headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}, body });
+  };
+  let res = await send();
+  if (res.status === 401 && (await refreshAccessToken())) res = await send();
+  if (!res.ok) throw await toError(res);
+  if (res.status === 204) return undefined as T;
+  return ((await res.json()) as { data: T }).data;
 }

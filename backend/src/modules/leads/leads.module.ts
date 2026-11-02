@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Injectable, Module, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsDateString, IsIn, IsOptional, IsString, IsUUID, Matches, MaxLength, MinLength } from 'class-validator';
 import { AuditService } from '../../common/audit/audit.service';
 import { RequirePermission } from '../../common/auth/decorators';
 import { assertBranchAccess, branchIdFilter } from '../../common/auth/scoping';
@@ -9,6 +9,7 @@ import { AuthContext, RequestContextStore } from '../../common/context/request-c
 import { PrismaService, Tx } from '../../common/db/prisma.service';
 import { nextNumber } from '../../common/db/sequences';
 import { AppError } from '../../common/http/app-error';
+import { parseDateOnly, toDateOnly } from '../../common/utils/dates';
 import { requirePhone } from '../../common/utils/phone';
 
 const trim = ({ value }: { value: unknown }): unknown => (typeof value === 'string' ? value.trim() : value);
@@ -19,7 +20,26 @@ type Stage = (typeof LEAD_STAGES)[number];
 /** Qo'lda qo'yiladigan bosqichlar; "enrolled" faqat o'quvchiga aylantirish orqali */
 const MANUAL_STAGES = ['new', 'contacted', 'trial', 'contract', 'lost'] as const;
 
-class CreateLeadDto {
+export const LEAD_TEMPERATURES = ['hot', 'warm', 'cold'] as const;
+const PREFERRED_TIMES = ['morning', 'afternoon', 'evening', 'weekend'] as const;
+const NOTE_KINDS = ['note', 'call', 'message', 'visit'] as const;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Lidning qo'shimcha anketasi: kim, qachon, nimaga qiziqadi, qachon qayta bog'lanish (create va update uchun umumiy) */
+class LeadDetailsDto {
+  @IsOptional() @Transform(emptyToNull) @IsIn(['male', 'female']) gender?: 'male' | 'female' | null;
+  @IsOptional() @Transform(emptyToNull) @Matches(DATE_ONLY, { message: 'Sana YYYY-MM-DD ko\'rinishida bo\'lsin' }) birth_date?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(150) guardian_name?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(50) guardian_relation?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(30) guardian_phone?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(150) school?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsIn(PREFERRED_TIMES) preferred_time?: (typeof PREFERRED_TIMES)[number] | null;
+  @IsOptional() @IsIn(LEAD_TEMPERATURES) temperature?: (typeof LEAD_TEMPERATURES)[number];
+  @IsOptional() @Transform(emptyToNull) @IsDateString({ strict: true }) next_contact_at?: string | null;
+  @IsOptional() @Transform(emptyToNull) @IsDateString({ strict: true }) trial_at?: string | null;
+}
+
+class CreateLeadDto extends LeadDetailsDto {
   @Transform(trim) @IsString() @MinLength(2) @MaxLength(150) full_name!: string;
   @IsUUID() branch_id!: string;
   @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(30) phone?: string | null;
@@ -30,7 +50,7 @@ class CreateLeadDto {
   @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(2000) note?: string | null;
 }
 
-class UpdateLeadDto {
+class UpdateLeadDto extends LeadDetailsDto {
   @IsOptional() @Transform(trim) @IsString() @MinLength(2) @MaxLength(150) full_name?: string;
   @IsOptional() @IsUUID() branch_id?: string;
   @IsOptional() @Transform(emptyToNull) @IsString() @MaxLength(30) phone?: string | null;
@@ -48,10 +68,17 @@ class LeadQuery {
   @IsOptional() @IsIn(LEAD_STAGES) stage?: Stage;
   @IsOptional() @IsUUID() branch_id?: string;
   @IsOptional() @IsUUID() owner_id?: string;
+  @IsOptional() @IsIn(LEAD_TEMPERATURES) temperature?: (typeof LEAD_TEMPERATURES)[number];
+  /** overdue — bog'lanish muddati o'tgan; today — bugun bog'lanish kerak (Toshkent vaqti) */
+  @IsOptional() @IsIn(['overdue', 'today']) follow_up?: 'overdue' | 'today';
 }
 
 class NoteDto {
   @Transform(trim) @IsString() @MinLength(1) @MaxLength(1000) text!: string;
+  /** Faoliyat turi: izoh, qo'ng'iroq, xabar yoki tashrif — tarixda alohida ko'rinadi */
+  @IsOptional() @IsIn(NOTE_KINDS) kind?: (typeof NOTE_KINDS)[number];
+  /** Shu faoliyatdan keyin keyingi bog'lanish vaqtini bir yo'la belgilash (null — eslatmani olib tashlash) */
+  @IsOptional() @Transform(emptyToNull) @IsDateString({ strict: true }) next_contact_at?: string | null;
 }
 
 const leadInclude = {
@@ -76,6 +103,16 @@ const view = (l: LeadRow, withContacts: boolean) => ({
   note: l.note,
   lost_reason: l.lostReason,
   student_id: l.studentId,
+  gender: l.gender,
+  birth_date: toDateOnly(l.birthDate),
+  guardian_name: l.guardianName,
+  guardian_relation: l.guardianRelation,
+  guardian_phone: withContacts ? l.guardianPhone : null,
+  school: l.school,
+  preferred_time: l.preferredTime,
+  temperature: l.temperature,
+  next_contact_at: l.nextContactAt,
+  trial_at: l.trialAt,
   created_at: l.createdAt,
   last_activity_at: l.lastActivityAt,
 });
@@ -101,16 +138,26 @@ export class LeadsService {
         where: {
           AND: [
             leadScope(auth, 'lead.view'),
-            { branchId: query.branch_id, ownerId: query.owner_id, stage: query.stage },
+            { branchId: query.branch_id, ownerId: query.owner_id, stage: query.stage, temperature: query.temperature },
+            this.followUpFilter(query.follow_up),
             query.q ? { OR: [{ fullName: { contains: query.q, mode: 'insensitive' } }, ...(canContacts && digits.length >= 4 ? [{ phone: { contains: digits } }] : [])] } : {},
           ],
         },
         include: leadInclude,
-        orderBy: { lastActivityAt: 'desc' },
+        orderBy: query.follow_up ? [{ nextContactAt: 'asc' }, { lastActivityAt: 'desc' }] : { lastActivityAt: 'desc' },
         take: 500,
       });
       return rows.map((l) => view(l, canContacts));
     });
+  }
+
+  /** Faol (yopilmagan) lidlar ichida keyingi bog'lanish vaqti o'tgan yoki bugunga belgilanganlar */
+  private followUpFilter(kind?: 'overdue' | 'today'): Prisma.LeadWhereInput {
+    if (!kind) return {};
+    const dayStart = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent' }).format(new Date())}T00:00:00+05:00`);
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+    const open = { stage: { notIn: ['enrolled', 'lost'] as Stage[] } };
+    return kind === 'overdue' ? { ...open, nextContactAt: { lt: dayStart } } : { ...open, nextContactAt: { gte: dayStart, lt: dayEnd } };
   }
 
   get(id: string) {
@@ -131,6 +178,7 @@ export class LeadsService {
     const auth = RequestContextStore.auth();
     assertBranchAccess(auth, dto.branch_id);
     const phone = dto.phone ? requirePhone(dto.phone) : null;
+    const guardianPhone = dto.guardian_phone ? requirePhone(dto.guardian_phone) : null;
     return this.db.tx(async (tx) => {
       await this.assertRefs(tx, dto);
       const lead = await tx.lead.create({
@@ -145,6 +193,8 @@ export class LeadsService {
           // Mas'ul ko'rsatilmasa — lidni kiritgan xodim
           ownerId: dto.owner_id ?? auth.userId,
           note: dto.note,
+          ...this.detailsData(dto),
+          guardianPhone,
         },
         include: leadInclude,
       });
@@ -157,8 +207,9 @@ export class LeadsService {
   update(id: string, dto: UpdateLeadDto) {
     const auth = RequestContextStore.auth();
     if (dto.branch_id) assertBranchAccess(auth, dto.branch_id);
-    if (dto.phone !== undefined && !auth.permissions['lead.view_contacts']) throw AppError.forbidden("Kontaktlarni o'zgartirishga ruxsat yo'q");
+    if ((dto.phone !== undefined || dto.guardian_phone !== undefined) && !auth.permissions['lead.view_contacts']) throw AppError.forbidden("Kontaktlarni o'zgartirishga ruxsat yo'q");
     const phone = dto.phone ? requirePhone(dto.phone) : dto.phone;
+    const guardianPhone = dto.guardian_phone ? requirePhone(dto.guardian_phone) : dto.guardian_phone;
     return this.db.tx(async (tx) => {
       const before = await this.find(tx, auth, id, 'lead.update');
       if (before.stage === 'enrolled') throw AppError.conflict("O'quvchiga aylantirilgan lidni o'zgartirib bo'lmaydi", 'LEAD_CLOSED');
@@ -177,6 +228,8 @@ export class LeadsService {
           adSourceId: dto.ad_source_id,
           ownerId: dto.owner_id,
           note: dto.note,
+          ...this.detailsData(dto),
+          guardianPhone,
           stage: dto.stage,
           // Lid qayta ochilsa rad sababi tozalanadi
           lostReason: stageChanged ? (dto.stage === 'lost' ? dto.lost_reason : null) : undefined,
@@ -196,8 +249,11 @@ export class LeadsService {
     const auth = RequestContextStore.auth();
     return this.db.tx(async (tx) => {
       await this.find(tx, auth, id, 'lead.update');
-      const event = await tx.leadEvent.create({ data: { tenantId: auth.tenantId, leadId: id, type: 'note', text: dto.text, actorId: auth.userId } });
-      await tx.lead.update({ where: { id }, data: { lastActivityAt: new Date() } });
+      const event = await tx.leadEvent.create({ data: { tenantId: auth.tenantId, leadId: id, type: dto.kind ?? 'note', text: dto.text, actorId: auth.userId } });
+      await tx.lead.update({
+        where: { id },
+        data: { lastActivityAt: new Date(), nextContactAt: dto.next_contact_at === undefined ? undefined : dto.next_contact_at === null ? null : new Date(dto.next_contact_at) },
+      });
       return { id: event.id };
     });
   }
@@ -216,7 +272,17 @@ export class LeadsService {
           owner: lead.ownerId ? { connect: { id: lead.ownerId } } : undefined,
           adSource: lead.adSourceId ? { connect: { id: lead.adSourceId } } : undefined,
           note: lead.note,
-          client: { create: { tenantId: auth.tenantId, fullName: lead.fullName, phone: lead.phone } },
+          client: {
+            create: {
+              tenantId: auth.tenantId,
+              fullName: lead.fullName,
+              phone: lead.phone,
+              birthDate: lead.birthDate,
+              gender: lead.gender,
+              // Ota-ona kiritilgan bo'lsa — o'quvchi kartochkasida aloqa shaxsi sifatida saqlanadi (to'lov xabarlarini oladi)
+              contactPersons: lead.guardianName ? { create: { tenantId: auth.tenantId, fullName: lead.guardianName, relation: lead.guardianRelation ?? 'Ota-ona', phone: lead.guardianPhone, isBillRecipient: true } } : undefined,
+            },
+          },
         },
         select: { id: true, number: true },
       });
@@ -235,6 +301,21 @@ export class LeadsService {
       await tx.lead.delete({ where: { id } });
       await this.audit.write(tx, auth.tenantId, { action: 'lead.deleted', entityType: 'lead', entityId: id, oldValue: { full_name: lead.fullName, stage: lead.stage } });
     });
+  }
+
+  /** Qo'shimcha anketa maydonlari (telefon alohida — formatlanadi). `undefined` — o'zgartirilmaydi, `null` — tozalanadi */
+  private detailsData(dto: LeadDetailsDto) {
+    return {
+      gender: dto.gender,
+      birthDate: dto.birth_date === undefined ? undefined : dto.birth_date === null ? null : parseDateOnly(dto.birth_date),
+      guardianName: dto.guardian_name,
+      guardianRelation: dto.guardian_relation,
+      school: dto.school,
+      preferredTime: dto.preferred_time,
+      temperature: dto.temperature,
+      nextContactAt: dto.next_contact_at === undefined ? undefined : dto.next_contact_at === null ? null : new Date(dto.next_contact_at),
+      trialAt: dto.trial_at === undefined ? undefined : dto.trial_at === null ? null : new Date(dto.trial_at),
+    };
   }
 
   private async find(tx: Tx, auth: AuthContext, id: string, permission: 'lead.view' | 'lead.update' | 'lead.delete'): Promise<LeadRow> {

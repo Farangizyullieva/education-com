@@ -1,13 +1,16 @@
 import type { AuthContext } from '../context/request-context';
 import { AppError } from '../http/app-error';
 
-/** Branch scoping (TZ 3.3): bo'sh ro'yxat = barcha filiallar → filtr qo'yilmaydi */
+/**
+ * Branch scoping: har bir foydalanuvchi faqat o'z filiallarini ko'radi. Filial biriktirilmagan xodim HECH NARSA ko'rmaydi
+ * (oldin bo'sh ro'yxat "barcha filiallar" edi — xavfli). Istisno: filialga biriktirilmagan direktor (`allBranches`).
+ */
 export function branchIdFilter(auth: AuthContext): { in: string[] } | undefined {
-  return auth.allowedBranchIds.length ? { in: auth.allowedBranchIds } : undefined;
+  return auth.allBranches ? undefined : { in: auth.allowedBranchIds };
 }
 
 export function canAccessBranch(auth: AuthContext, branchId: string): boolean {
-  return auth.allowedBranchIds.length === 0 || auth.allowedBranchIds.includes(branchId);
+  return auth.allBranches || auth.allowedBranchIds.includes(branchId);
 }
 
 /** Ruxsat etilmagan filial mavjudligini oshkor qilmaslik uchun 404 */

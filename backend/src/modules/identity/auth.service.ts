@@ -128,6 +128,23 @@ export class AuthService {
     });
   }
 
+  /**
+   * Xodim o'z parolini almashtiradi (joriy parolni bilishi shart). Barcha sessiyalar (refresh token) bekor qilinadi:
+   * parol o'g'irlangan bo'lsa ham egasi almashtirgach begona sessiya yopiladi.
+   */
+  async changePassword(current: string, next: string): Promise<void> {
+    const auth = RequestContextStore.auth();
+    const user = await this.db.tx((tx) => tx.user.findUniqueOrThrow({ where: { id: auth.userId }, select: { passwordHash: true } }));
+    if (!(await verify(user.passwordHash, current))) throw AppError.field('current_password', 'INVALID_PASSWORD', "Joriy parol noto'g'ri");
+    if (next === current) throw AppError.field('new_password', 'SAME_PASSWORD', 'Yangi parol eskisidan farq qilishi kerak');
+    const passwordHash = await hashPassword(next);
+    await this.db.tx(async (tx) => {
+      await tx.user.update({ where: { id: auth.userId }, data: { passwordHash } });
+      await tx.refreshToken.updateMany({ where: { userId: auth.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      await this.audit.write(tx, auth.tenantId, { action: 'user.password_changed', entityType: 'user', entityId: auth.userId });
+    });
+  }
+
   /** Yangi kalit yaratadi; kod bilan tasdiqlanmaguncha 2FA yoqilmaydi */
   twoFactorSetup(password: string) {
     const auth = RequestContextStore.auth();
